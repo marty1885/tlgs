@@ -1,0 +1,19 @@
+<%c++
+std::string title = @@.get<std::string>("title");
+if(!title.empty()) {
+    $$ << "# " << title << "\n";
+}
+else {
+    $$ << "# TLGS - \"Totally Legit\" Gemini Search";
+}
+
+std::string search_url;
+if(@@.get<bool>("verbose"))
+    search_url = "/v/search";
+else
+    search_url = "/search";
+%>
+
+=> / Home
+=> {%search_url%} Search
+=> /backlinks? Query backlinks

@@ -1,0 +1,8 @@
+User-agent: *
+Disallow: /search
+Disallow: /v/search
+Disallow: /search_jump
+Disallow: /v/search_jump
+Disallow: /add_seed
+Disallow: /backlinks
+Disallow: /api

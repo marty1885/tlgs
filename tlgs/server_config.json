@@ -1,0 +1,53 @@
+{
+	"app":{
+	    "document_root": "./contents",
+	    "file_types": [
+			"gif",
+			"png",
+			"jpg",
+			"js",
+			"css",
+			"html",
+			"ico",
+			"swf",
+			"xap",
+			"apk",
+			"cur",
+			"xml",
+			"gmi",
+			"txt"
+	    ],
+	    "use_implicit_page": true,
+	    "implicit_page": "index.gmi",
+	    "home_page": "index.gmi",
+	    "mime": {
+	    	"text/gemini": ["gmi", "gemini"]
+	    }
+	},
+	"plugins": [
+	    {
+			"name": "dremini::GeminiServerPlugin",
+			"config": {
+				"listeners": [
+					{
+						"key": "../../key_nina.pem",
+						"cert": "../../cert_nina.pem",
+						"ip": "0.0.0.0"
+					}
+				],
+				"numThread": 3
+			}
+	    }
+	],
+    "db_clients": [
+        {
+            "rdbms": "postgresql",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "dbname": "tlgs",
+            "number_of_connections": 4,
+            "timeout": 10
+        }
+     ]
+}
+    

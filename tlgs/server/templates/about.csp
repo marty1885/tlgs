@@ -1,0 +1,33 @@
+<%view header %>
+
+## About TLGS
+
+TLGS, the Totally Legit Gemini Search is an experimental search engine for contents served over the Gemini Protocol. It crawls and indexes textual contents that it encounters in the Geminispace. And provides a interface for people to look for what they need. The interface is heavly inspired by GUS and geminispace.info.
+
+TLGS is built on a (at the time) state of the art programming language - Ru.... C++20! And it uses Drogon as the base framework for networking, database, etc...
+
+=> https://github.com/drogonframework/drogon Drogon - A fast C++ web application framework
+
+## A new search engine?
+
+TLGS is not based on search engine/provider that preexisted on Gemini. It's a pet project, a new enging designed to index and provide search with as little computation resources as possible. There's no real motivation behind the authors developing it. Hence the "Totally Legit" part, mocking myself. It's just fun and I think Gemini is a cool project. 
+
+The source code of TLGS is available  at the following link. And we welcome all contributions:
+
+=> https://github.com/marty1885/tlgs TLGS Source Code
+
+## Contacting the Admins
+
+You may reach the admins of tlgs.space (there might be other instances of TLGS on Geminispace) via email at pilot \at tlgs.space
+
+Currently it's a one crew team. I'll be more than happy to share the load if this ended up important to the Geminispace. Makes sure the project being alive when I'm busy or just not in the mood of doing projects.
+
+## The Obligatory Gemini Introduction
+
+What is and why Gemini? That's a good question. Gemini is an new protocol designed in 2019 that attempts to bring the early internet back to the modern age. Why? The modern web has some serious issues, especially from a technology point of view. For example. HTML is overly difficult to parse and layout, modern web design is too information sparse, tracking through fingirprint and JavaScript. Gemini is an alternative aims to solve them. The protocol is by specification encrypted, the gemini markup language is easy to parse, identity on Gemini is verified through client certificates, etc...
+
+However, Gemini is not intended to replace the common Web. But to coexist with it. Gemini focueses on textual and information dense pages. Like personal blogs (called Gemlogs) news and discussion threads. There exist proxies from the common Web to Gemini and vise versa. However it's encouraged to use a Gemini browser to browse contents on Geminispace.  Also, Gemini does not have a styling system. The presentation of a site is fully determined by the browser.
+
+Hop over to the Gemini Project homepage to learn more about it!
+
+=> gemini://gemini.circumlunar.space/ Gemini Project

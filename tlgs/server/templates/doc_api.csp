@@ -1,0 +1,5 @@
+<%view header %>
+
+To assist with (potential) data sharing between servers. TLGS provides a set of APIs that returns some useful internal information in a format that is easy for computers to understand; mostly JSON. Note that these APIs are intentionally slowed down to prevent abuse. The purpose of the APIs should be self explanatory.
+
+=> /api/v1/known_hosts

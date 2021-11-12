@@ -1,0 +1,5 @@
+<%view header %>
+
+### 2021-11-7
+
+Test deployment in my homelab. Running with 40K pages in index. Response time is acceptable with a bloody slow CPU.

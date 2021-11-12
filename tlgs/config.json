@@ -1,0 +1,12 @@
+{
+    "db_clients": [
+       {
+           "rdbms": "postgresql",
+           "host": "127.0.0.1",
+           "port": 5432,
+           "dbname": "tlgs",
+           "number_of_connections": 4,
+           "timeout": 10
+       }
+    ]
+}

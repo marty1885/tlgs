@@ -1,0 +1,8 @@
+<%view header %>
+
+### Backlinks
+Given a page, backlinks are all the pages that links to said page. TLGS's "Query backlinks" feature allows users to retrieve all the backlinks of a given page. This is useful for discovering new, releated capsules and gauging how popular a page is from a different angle. For example:
+
+=> /backlinks?gemini.circumlunar.space
+
+Note the distinction of internal and cross-capsule backlinks. Internal backlinks are backlinks originating from the same capsule as the target page. And cross-capsule baclinks are those originating from outside the same capsule. For now determining if a backlink is internal or not is purely by checking if the host portion of the URL is the same or not. A more indepth method shall be implemented in the future.

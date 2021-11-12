@@ -1,0 +1,87 @@
+<%inc
+#include "search_result.hpp"
+#include <drogon/utils/Utilities.h>
+#include <tlgsutils/url_parser.hpp>
+#include <fmt/core.h>
+%>
+<%view header %>
+
+<%c++
+auto sanitize_previw = [](std::string_view str) -> std::string {
+    std::string result;
+    result.reserve(str.size());
+    const std::string_view spaces = " \r\n\t";
+    bool is_space = true;
+    for(auto ch : str) {
+        if(spaces.find(ch) == std::string_view::npos)
+            result.push_back(ch);
+        else if(!is_space)
+            result.push_back(' ');
+        is_space = (ch == ' ' || ch == '\r' || ch == '\n' || ch == '\t');
+    }
+    auto idx = result.find_first_not_of("`*=>#");
+    if(idx == std::string::npos)
+        return result;
+    return result.substr(idx);
+};
+auto search_result = @@.get<std::vector<SearchResult>>("search_result");
+bool verbose_mode = @@.get<bool>("verbose");
+auto encoded_search_term = @@.get<std::string>("encoded_search_term");
+size_t current_page = @@.get<size_t>("current_page_idx")+1;
+size_t item_per_page = @@.get<size_t>("item_per_page");
+size_t total_results = @@.get<size_t>("total_results");
+size_t max_pages = total_results/item_per_page + (total_results%item_per_page ? 1 : 0);
+std::string search_query = @@.get<std::string>("search_query");
+
+if(!verbose_mode) {
+    std::string search_path = " /v/search/"+std::to_string(current_page)+"?"+encoded_search_term;
+    $$ << "## Search\n"
+        << fmt::format("=> {} Enter verbose search\n", search_path);
+}
+else {
+    std::string search_path = " /search/"+std::to_string(current_page)+"?"+encoded_search_term;
+    $$ << "## Search [verbose]\n"
+        << fmt::format("=> {} Exit verbose search\n", search_path);
+}
+
+for(const auto& result : search_result) {
+    size_t size_in_kb = std::max(result.size / 1000, size_t{1});
+    std::string content_type = result.content_type;
+    if(content_type.empty())
+        content_type = "unknown/none";
+    auto url = tlgs::Url(result.url);
+    if(size_in_kb != 0)
+        $$ << fmt::format("=> {} {} ({}, {}KB)\n", url.str(), result.title, content_type, size_in_kb);
+    else
+        $$ << fmt::format("=> {} {} ({})\n", url.str(), result.title, content_type);
+    if(result.title != url.str())
+        $$ << "* " << utils::urlDecode(url.str()) << "\n";
+    if(verbose_mode) {
+        $$ << "* Score: " << result.score << "\n";
+        $$ << "* Last Crawled: " << result.last_crawled_at << "\n";
+    }
+    $$ << sanitize_previw(result.preview) << "\n";
+    $$ << "\n";
+}
+
+if(search_result.size() == 0) {
+    $$ << "> WOW, such emptiness... - Totally not Doge\n"
+        << "0 search result found\n";
+}
+else {
+    $$ << fmt::format("Page {} of {} ({} results).\n", current_page, max_pages, total_results);
+    std::string search_path = (verbose_mode ? "/v/search" : "/search");
+
+    if(current_page != 1) {
+        auto page_num = current_page-1;
+        if(page_num != 1)
+            $$ << fmt::format("=> {}/{}?{} Previous Page\n", search_path, current_page-1, encoded_search_term);
+        else
+            $$ << fmt::format("=> {}?{} Previous Page\n", search_path, encoded_search_term);
+    }
+    if(current_page != max_pages)
+        $$ << fmt::format("=> {}/{}?{} Next Page\n", search_path, current_page+1, encoded_search_term);
+    if(max_pages != 1)
+        $$ << fmt::format("=> {}_jump/{} Go to page\n", search_path, encoded_search_term);
+}
+%>

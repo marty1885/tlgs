@@ -1,0 +1,38 @@
+<%inc
+#include "search_result.hpp"
+#include <iomanip>
+#include <sstream>
+%>
+<%c++
+
+auto leftpad = [](auto x, size_t num) {
+    std::stringstream ss;
+    ss << std::setw(num) << x;
+    return ss.str();
+};
+
+auto server_stat = @@.get<std::shared_ptr<ServerStatistics>>("server_stat");
+%>
+
+<%view header %>
+
+### Pages and domains
+
+The number of pages and domains known to TLGS at {%server_stat->update_time%}. These figures are updated every 6Hrs or so.
+
+```
+{%leftpad(server_stat->page_count, 8)%} : pages
+{%leftpad(server_stat->domain_count, 8)%} : domains
+```
+
+### By content type
+
+The distribution of file types withing TLGS's index at {%server_stat->update_time%}. These figures are updated every 6Hrs or so.
+
+```
+<%c++
+for(const auto& [content_type, count] : server_stat->content_type_count) 
+    $$ << leftpad(count, 8) << " : " << content_type << "\n";
+%>
+```
+

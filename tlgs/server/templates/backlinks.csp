@@ -1,0 +1,15 @@
+<%view header %>
+
+<%c++
+const auto& internal_backlinks = @@.get<std::vector<std::string>>("internal_backlinks");
+const auto& external_backlinks = @@.get<std::vector<std::string>>("external_backlinks");
+
+$$ << external_backlinks.size() << " cross-capsule backlinks\n";
+for(const auto& url : external_backlinks)
+	$$ << "=>" << url << "\n";
+
+$$ << "\n";
+$$ << internal_backlinks.size() << " internal backlinks\n";
+for(const auto& url : internal_backlinks)
+	$$ << "=>" << url << "\n";
+%>

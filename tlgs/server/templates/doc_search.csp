@@ -1,0 +1,53 @@
+<%view header %>
+
+
+### The search algorithm
+
+TLGS uses a combination of content ranking and link analysis to generate the search result. Put it simply, TlGS first finds all pages in it's index that matches the search query. Then it collects the connection from or to the matched pages. Figures out which pages are more popular. Then, the two information are combined to form the final search result. The technique TLGS uses are designed for the early web - which is exactly what Gemini is designed to be like.
+
+Here's links if you want to learn more:
+
+=> https://en.wikipedia.org/wiki/Full-text_search Wikipedia: Full-text search
+=> http://pi.math.cornell.edu/~mec/Winter2009/RalucaRemus/Lecture4/lecture4.html HITS Algorithm - Hubs and Authorities on the Internet
+
+### Filters
+
+Filters allows you to, well, filter the search result by different criteria. The following criteria are available
+
+* content_type
+* domain
+* size
+
+To apply the filters, just add the filter followed by a colon then the criteria after your search query. Note that you mush supply a search term besides the filter for the search to work. For example
+
+=> /search?Gemini%20content_type%3Atext%2Fgemini Gemini content_type:text/gemini
+=> /search?UNIX%20content_type%3Atext%2Fplain UNIX content_type:text/plain
+=> /search?gemini%20domain%3Agemini.circumlunar.space Gemini domain:gemini.circumlunar.space
+
+And this is not a valid search query. TLGS will ask you to enter the search query again
+=> /search?content_type:text/plain content_type:text/plain
+
+The size filter works lightly differently. Instead of searching for a certain size, it searches for files larger or smaller than a size. By default the unit of size is in bytes. You can also suffix the size with units. Currently K, M, G, Ki, Mi, Gi are supported. Be aware that TLGS does not know about the size of binary files (images, iso files, etc..). Thus these files are excluded when the size filter is applied.
+
+=> /search?Gemini%20size%3A%3C2048 Gemini size:<2048
+=> /search?Gemini%20size%3A%3E5K Gemini size:>5K
+=> /search?Gemini%20size%3A%3C5KB Gemini size:<5KB
+=> /search?Gemini%20size%3A%3C0.005MiB Gemini size:<0.005MiB
+
+The NOT operator negates the proceeding filter. 
+
+=> /search?Gemini%20NOT%20content_type%3Atext%2Fgemini Gemini NOT content_type:text/gemini
+
+Applying filters of the same type effectively ORs them together. While applying multiple filters of different type ANDs them together.
+
+=> /search?Gemini%20content_type%3Atext%2Fgemini%20content_type%3Atext%2Fplain Gemini content_type:text/gemini content_type:text/plain
+=> /search?Gemini%20content_type%3Atext%2Fgemini%20size%3A%3C5K Gemini content_type:text/gemini size:<5K
+
+### Verbose mode
+
+Verbose mode allows one to gain insight on how TLGS ranks contents and when the page is crawled. You can enable verbose mode on any search page by clicking the "Enter Verbose Mode" link. This will send to a similar page but with more information about the search. You can then click "Exit Verbose Mode" to return to the normal search style. 
+
+You can also enter verbose mode manually via the URL. Prefix any search page with a `/v` to enter. For example:
+
+=> /search?Gemini
+=> /v/search?Gemini

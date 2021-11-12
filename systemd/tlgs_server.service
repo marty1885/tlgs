@@ -1,0 +1,15 @@
+[Unit]
+Description=TLGS Server
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+StartLimitBurst=5
+StartLimitIntervalSec=10
+User=tlgs
+ExecStart=/usr/bin/tlgs_server /etc/tlgs/server_config.json
+
+[Install]
+WantedBy=multi-user.target

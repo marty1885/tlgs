@@ -1,0 +1,3 @@
+[submodule "thrid_party/dremini"]
+	path = thrid_party/dremini
+	url = https://github.com/marty1885/dremini

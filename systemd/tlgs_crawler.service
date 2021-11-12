@@ -1,0 +1,15 @@
+[Unit]
+Description=TLGS Crawler
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+StartLimitBurst=5
+StartLimitIntervalSec=10
+User=tlgs
+ExecStart=/usr/bin/tlgs_crawler /etc/tlgs/config.json -c 4
+
+[Install]
+WantedBy=multi-user.target

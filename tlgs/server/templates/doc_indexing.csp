@@ -1,0 +1,37 @@
+<%view header %>
+
+### What does TLGS index?
+
+As of now, TLGS only indexes textual content withing Gemini. And it ignores all links to other protocols like HTTP and Gopher. It only parses and follows links withing `text/gemini` pages. Thus links withing other textual pages are ignored. Though contents in `text/plain`, `text/markdown`, `text/x-rst` and `plaintext` are still indexed.
+
+Textual pages over 2.5MB are not indexed nor links within are followed. And we only fetch headers of binary files to make sure the file exists. Then it's URL is directly added to the index. If you see broken connections requesting binary files. That's likely TLGS checking if the file exists.
+
+Please understand that TLGS allows manually excluding capsules from it's index. That the maintainer utilizes to prevent TLGS from crawling sites that causes issues with ranking or other functionalities. Please don't take it personally or think it is censorship if your content does not get indexed. TLGS although designed to be scalable and efficient, does run on fairly limited resources. We promise to keep working and make the indexing more efficient and resilient.
+
+Currently especially contents of the following types is excluded:
+
+* Mirrors of large websites from the common Web such as social media, Wikipedia (too big to be added to our index)
+* Mirrors of news aggrigrates from the common Web (again, too big to be added)
+
+With that said. We do index individual news mirror as long as they are not overly large.
+
+### Does TLGS index the entirity of my page?
+
+Yes... but not really 100%. To provide better search result. After retrieving the page. TLGS removes ASCII arts and content separators from the page before indexing. There will be false positives in the detection despite our efforts. Causing some code segments (especially esoteric languages like BrainF**k) be removed from the index. Thus almost everything relevant will be indexed.
+
+### Preventing TLGS crawling with robot.txt	
+
+To prevent TLGS from crawling pages of your site, place a "robots.txt" file in your capsule's root directory. TLGS will fetch and parse the file before crawling your site. The file should have a content type of `text/plain` and is encoded in UTF-8, without BOM. The file is cached by TLGS for 7 days. TLGS will reuse the file within the caching period to reduce bandwidth consumption and speedup crawling.
+
+TLGS follows the following user agents:
+* tlgs
+* indexer
+* *
+
+### How can I recognize requests from TLGS?
+
+You can't. Gemini does not provide a way for TLGS (or any client in that matter) to notify the server about the implementation and/or intent.
+
+### Does TLGS keeps the data forever?
+
+No.  TLGS will automatically remove a page from it's index after 1 month of failing to re-retrieve it (ex: the server was removed from the internet, the pages was deleted, etc..). 
