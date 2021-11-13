@@ -10,7 +10,7 @@ Task<> createDb()
 {
 	auto db = app().getDbClient();
 	co_await db->execSqlCoro(R"(
-		CREATE TABLE IF NOT EXIST public.pages (
+		CREATE TABLE IF NOT EXISTS public.pages (
 			url text NOT NULL,
 			domain_name text NOT NULL,
 			port integer NOT NULL,
@@ -34,11 +34,11 @@ Task<> createDb()
 			PRIMARY KEY (url)
 		);
 	)");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXIST last_crawled_index ON public.pages USING btree (last_crawled_at DESC);");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXIST search_vector_index ON public.pages USING gin (search_vector);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS last_crawled_index ON public.pages USING btree (last_crawled_at DESC);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS search_vector_index ON public.pages USING gin (search_vector);");
 
 	co_await db->execSqlCoro(R"(
-		CREATE TABLE IF NOT EXIST public.links (
+		CREATE TABLE IF NOT EXISTS public.links (
 			url text NOT NULL,
 			host text NOT NULL,
 			port integer NOT NULL,
@@ -48,21 +48,21 @@ Task<> createDb()
 			is_cross_site boolean NOT NULL
 		);
 	)");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXIST is_cross_site_index ON public.links USING btree (is_cross_site);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS is_cross_site_index ON public.links USING btree (is_cross_site);");
 	co_await db->execSqlCoro("CREATE INDEX source_url_index ON public.links USING btree (url);");
 	co_await db->execSqlCoro("CREATE INDEX to_url_index ON public.links USING btree (to_url);");
 
 	co_await db->execSqlCoro(R"(
-		CREATE TABLE IF NOT EXIST public.robot_policies (
+		CREATE TABLE IF NOT EXISTS public.robot_policies (
 			host text NOT NULL,
 			port integer NOT NULL,
 			disallowed text NOT NULL
 		);
 	)");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXIST host_port_index ON public.robot_policies USING btree (host, port);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS host_port_index ON public.robot_policies USING btree (host, port);");
 
 	co_await db->execSqlCoro(R"(
-		CREATE TABLE IF NOT EXIST public.robot_policies_status (
+		CREATE TABLE IF NOT EXISTS public.robot_policies_status (
 			host text NOT NULL,
 			port integer NOT NULL,
 			last_crawled_at timestamp without time zone NOT NULL,

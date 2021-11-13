@@ -77,10 +77,11 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
         // co_return {};
         auto db = app().getDbClient();
         // XXX: I really want to have a proper job queue. But using SQL is good enought for now
+        // XXX: I Hope this does not cause a data race
         auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-            "WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY OR last_crawled_at IS NULL) "
-            "AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-            "LIMIT 20 RETURNING url");
+            "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+            "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
+            "LIMIT 120) RETURNING url");
         if(urls.size() == 0)
             co_return {};
         
@@ -363,7 +364,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             // No reason to update if the hash is the same
             if(content_hash != new_content_hash) {
                 co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
-                    "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' '), ''), "
+                    "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
                     "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
             }
         }
