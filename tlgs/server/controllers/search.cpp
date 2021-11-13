@@ -199,8 +199,6 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
         "ts_rank_cd(pages.title_vector, plainto_tsquery($1))*50+ts_rank_cd(pages.search_vector, plainto_tsquery($1)) AS rank "
         "FROM pages WHERE pages.search_vector @@ plainto_tsquery($1) "
         "ORDER BY rank DESC LIMIT 50000;", query_str);
-    // TODO: For large queries, this query the slow part. Instead of using indexes to store links. We should store backlinks
-    // with URL as key and JSON as value. Then update via transactions
     auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
         "0 AS rank FROM pages JOIN links ON pages.url=links.to_url WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
         , query_str);
@@ -210,6 +208,8 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
     nodes.reserve(nodes_of_intrest.size());
     node_table.reserve(nodes_of_intrest.size());
     // Add all nodes to our graph
+    // TODO: Graph construction seems to be the slow part then a common term is being search. "Gemini", "capsule" are good examples.
+    // Optimize it
     for(const auto& links : {nodes_of_intrest, links_to_node}) {
         for(const auto& link : links) {
             auto source_url = link["source_url"].as<std::string>();
@@ -243,15 +243,16 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
         if(page["cross_site_links"].isNull())
             continue;
         auto links_str = page["cross_site_links"].as<std::string>();
-        auto links = nlohmann::json::parse(links_str).get<std::vector<std::string>>();
+        auto links = nlohmann::json::parse(std::move(links_str)).get<std::vector<std::string>>();
+        auto source_node = getIfExists(source_url);
+        if(source_node == nullptr) // Should not ever happen
+            continue;
+        source_node->out_neighbous.reserve(links.size());
         for(const auto& link : links) {
             const auto& dest_url = link;
-            auto source_node = getIfExists(source_url);
             auto dest_node = getIfExists(dest_url);
 
-            if(source_url == dest_url)
-                continue;
-            if(dest_node == nullptr || source_node == nullptr)
+            if(dest_node == nullptr || source_url == dest_url)
                 continue;
             source_node->out_neighbous.push_back(dest_node);
             dest_node->in_neighbous.push_back(source_node);

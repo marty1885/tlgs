@@ -86,9 +86,9 @@ int main(int argc, char** argv)
 
     CLI::App cli{"TLGS server"};
     std::string config_file = "/etc/tlgs/config.json";
-    LOG_INFO << "Loading config from " << config_file;
     cli.add_option("config_file", config_file, "Path to TLGS config file");
     CLI11_PARSE(cli, argc, argv);
+    LOG_INFO << "Loading config from " << config_file;
     app().loadConfigFile(config_file);
 
     app().run();
