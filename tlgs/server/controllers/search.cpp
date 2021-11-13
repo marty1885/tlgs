@@ -196,15 +196,13 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
 {
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "
-        "ts_rank_cd(pages.title_vector, query)*50+ts_rank_cd(pages.search_vector, query) AS rank "
-        "FROM plainto_tsquery($1) query, pages "
-        "WHERE pages.search_vector @@ query "
+        "ts_rank_cd(pages.title_vector, plainto_tsquery($1))*50+ts_rank_cd(pages.search_vector, plainto_tsquery($1)) AS rank "
+        "FROM pages WHERE pages.search_vector @@ plainto_tsquery($1) "
         "ORDER BY rank DESC LIMIT 50000;", query_str);
     // TODO: For large queries, this query the slow part. Instead of using indexes to store links. We should store backlinks
     // with URL as key and JSON as value. Then update via transactions
     auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
-        "0 AS rank FROM plainto_tsquery($1) query, pages JOIN links "
-        "ON pages.url=links.to_url WHERE links.is_cross_site = TRUE AND pages.search_vector @@ query "
+        "0 AS rank FROM pages JOIN links ON pages.url=links.to_url WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
         , query_str);
 
     std::unordered_map<std::string, size_t> node_table;
