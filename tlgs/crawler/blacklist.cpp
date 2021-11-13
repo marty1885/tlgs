@@ -1,6 +1,7 @@
 #include <string>
 #include <set>
 #include <vector>
+#include <regex>
 #include <tlgsutils/url_parser.hpp>
 
 bool inBlacklist(const std::string& url_str)
@@ -20,6 +21,13 @@ bool inBlacklist(const std::string& url_str)
         "gus.guru", // GUS no longer exists
         "ftrv.se", // Blocked me when developing the search engine. Waisting my time on timeout
         "gmi.bacardi55.io", // No longer exists
+        "clemat.is", // No longer exists
+        "nanako.mooo.com",
+        "gluonspace.com",
+        "lord.re",
+        "thurk.org",
+        "git.thebackupbox.net",
+        "mikelynch.org"
     };
 
     static const std::vector<std::string> blacklist_urls = {
@@ -188,14 +196,53 @@ bool inBlacklist(const std::string& url_str)
         // He doen't like bots. As your wish (Just put up a robots.txt)
         "gemini://alexschroeder.ch/",
 
-        // Too much code
+        // Code, RFC, man page
         "gemini://si3t.ch/code/",
         "gemini://tilde.club/~filip/library/",
         "gemini://gemini.bortzmeyer.org/rfc-mirror/",
         "gemini://chris.vittal.dev/rfcs",
         "gemini://going-flying.com/git/cgi/gemini.git/",
-        "gemini://szczezuja.flounder.online/git/"
+        "gemini://szczezuja.flounder.online/git/",
+        "gemini://gmi.noulin.net/rfc",
+        "gemini://gmi.noulin.net/man",
+        "gemini://hellomouse.net/user-pages/handicraftsman/ietf/",
+        "gemini://tilde.team/~orichalcumcosmonaut/darcs/website/prod/",
+
+
+        // Archives
+        "gemini://gemini.lost-frequencies.eu/posts/archive"
+
+        // scripts?
+        "gemini://warmedal.se/~antenna",
+
+        // Proxy/archive?
+        "gemini://blitter.com/",
+
+        // Songs?
+        "gemini://gemini.rob-bolton.co.uk/songs",
+
+        // Text based game
+        "gemini://gthudson.xyz/cgi-bin/quietplace.cgi"
+        "gemini://futagoza.gamiri.com/gmninkle/"
     };
+
+    if(url.str().find(".git/tree/") != std::string::npos)
+        return true;
+    if(url.str().find(".git/blob/") != std::string::npos)
+        return true;
+    // seems to be a sign of commn golpher proxy
+    if(url.str().find("gopher:/:/") != std::string::npos)
+        return true;
+
+    //XXX: half work way to detect commits
+    auto n = url.str().find("commits/");
+    if(n != std::string::npos) {
+        static const std::regex re("commits/[a-z0-9A-Z]+.*");
+        std::smatch sm;
+        std::string commit = url.str().substr(n);
+        if(std::regex_match(commit, sm, re))
+            return true;
+    }
 
     if(blacklist_domains.count(url.host()) != 0)
         return true;

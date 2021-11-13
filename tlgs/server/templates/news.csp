@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2021-11-13
+
+Tried a full-crawl of the Geminispace. Currently only crawls when I want to. If this goes well will move to a VPS and open it for public use.
+
 ### 2021-11-7
 
 Test deployment in my homelab. Running with 40K pages in index. Response time is acceptable with a bloody slow CPU.

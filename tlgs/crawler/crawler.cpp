@@ -341,6 +341,9 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     continue;
                 }
 
+                if(co_await shouldCrawl(link_url.str()) == false)
+                    continue;
+
                 bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
                 if(is_cross_site)
                     cross_site_links.push_back(link_url.str());
