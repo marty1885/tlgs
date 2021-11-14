@@ -191,7 +191,7 @@ bool inBlacklist(const std::string& url_str)
         // docs - not our business
         "gemini://cfdocs.wetterberg.nu/",
         "gemini://godocs.io",
-        "gemini://emacswiki.org/page/",
+        "gemini://emacswiki.org/",
 
         // He doen't like bots. As your wish (Just put up a robots.txt)
         "gemini://alexschroeder.ch/",
