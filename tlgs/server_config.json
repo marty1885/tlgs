@@ -30,8 +30,8 @@
 			"config": {
 				"listeners": [
 					{
-						"key": "../../key_nina.pem",
-						"cert": "../../cert_nina.pem",
+						"key": "../../key.pem",
+						"cert": "../../cert.pem",
 						"ip": "0.0.0.0"
 					}
 				],
