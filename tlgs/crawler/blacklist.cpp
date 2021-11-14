@@ -211,12 +211,10 @@ bool inBlacklist(const std::string& url_str)
 
         // Archives
         "gemini://gemini.lost-frequencies.eu/posts/archive"
+        "gemini://blitter.com/",
 
         // scripts?
         "gemini://warmedal.se/~antenna",
-
-        // Proxy/archive?
-        "gemini://blitter.com/",
 
         // Songs?
         "gemini://gemini.rob-bolton.co.uk/songs",
@@ -230,11 +228,16 @@ bool inBlacklist(const std::string& url_str)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
-    // seems to be a sign of commn golpher proxy
+    // seems to be a sign of common golpher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
         return true;
+    // links should not contain ASCII control characters
+    for(char ch : url.str()) {
+        if(ch >= 0 && ch <=26)
+            return true;
+    }
 
-    //XXX: half work way to detect commits
+    //XXX: half working way to detect commits
     auto n = url.str().find("commits/");
     if(n != std::string::npos) {
         static const std::regex re("commits/[a-z0-9A-Z]+.*");
