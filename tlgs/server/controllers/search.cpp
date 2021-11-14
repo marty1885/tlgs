@@ -556,8 +556,7 @@ Task<HttpResponsePtr> SearchController::backlinks(HttpRequestPtr req)
         }
     }
 
-    if(!input_is_good)
-    {
+    if(!input_is_good) {
         auto resp = HttpResponse::newHttpResponse();
         resp->addHeader("meta", "Enter URL to a page");
         resp->setStatusCode((HttpStatusCode)10);

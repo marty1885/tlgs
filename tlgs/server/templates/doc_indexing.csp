@@ -19,7 +19,7 @@ With that said. We do index individual news mirror as long as they are not overl
 
 Yes... but not really 100%. To provide better search result. After retrieving the page. TLGS removes ASCII arts and content separators from the page before indexing. There will be false positives in the detection despite our efforts. Causing some code segments (especially esoteric languages like BrainF**k) be removed from the index. Thus almost everything relevant will be indexed.
 
-### Preventing TLGS crawling with robot.txt	
+### Preventing TLGS crawling with robots.txt
 
 To prevent TLGS from crawling pages of your site, place a "robots.txt" file in your capsule's root directory. TLGS will fetch and parse the file before crawling your site. The file should have a content type of `text/plain` and is encoded in UTF-8, without BOM. The file is cached by TLGS for 7 days. TLGS will reuse the file within the caching period to reduce bandwidth consumption and speedup crawling.
 

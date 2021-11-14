@@ -344,6 +344,10 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 if(co_await shouldCrawl(link_url.str()) == false)
                     continue;
 
+                // avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
+                if(link_url.str().find(link_url.param()) == 0 && link_url.path().ends_with(".gmi"))
+                    link_url.withParam("");
+
                 bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
                 if(is_cross_site)
                     cross_site_links.push_back(link_url.str());
