@@ -214,6 +214,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://blitter.com/",
         "gemini://ake.crabdance.com:1966/message/",
         "gemini://iceworks.cc/z/",
+        "gemini://ake.crabdance.com:1966/channel/",
 
         // scripts?
         "gemini://warmedal.se/~antenna",
