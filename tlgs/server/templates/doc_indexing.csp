@@ -12,6 +12,7 @@ Currently especially contents of the following types is excluded:
 
 * Mirrors of large websites from the common Web such as social media, Wikipedia (too big to be added to our index)
 * Mirrors of news aggrigrates from the common Web (again, too big to be added)
+* Git commit histories, RFC mirrors and other web archives
 
 With that said. We do index individual news mirror as long as they are not overly large.
 

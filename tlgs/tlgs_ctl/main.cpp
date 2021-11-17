@@ -82,6 +82,8 @@ int main(int argc, char** argv)
 	cli.add_option("config_file", config_file, "Path to TLGS config file");
 	CLI11_PARSE(cli, argc, argv);
 
+	app().loadConfigFile(config_file);
+
 	if(populate_schema) {
 		app().getLoop()->queueInLoop(async_func(createDb));
 		app().run();
