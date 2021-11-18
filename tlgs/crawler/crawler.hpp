@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <tbb/concurrent_unordered_map.h>
 #include <trantor/net/EventLoop.h>
 #include <drogon/utils/coroutine.h>
 
@@ -53,6 +54,7 @@ public:
     }
 protected:
     EventLoop* loop_;
+    tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
     std::vector<std::string> craw_queue_;
     size_t max_concurrent_connections_ = 1;
     std::atomic<size_t> ongoing_crawlings_ = 0;

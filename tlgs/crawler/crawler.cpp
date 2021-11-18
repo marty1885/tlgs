@@ -121,6 +121,11 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     // We don't have the ablity crawl hidden sites, yet
     if(url.host().ends_with(".onion"))
         co_return false;
+    // Do not crawl hosts known to be down
+    // TODO: Put this on SQL
+    auto timeout = host_timeout_count_.find(url.hostWithPort(1965));
+    if(timeout != host_timeout_count_.end() && timeout->second > 3)
+        co_return false;
 
     // TODO: Use a LRU cache
     const std::string cache_key = url.hostWithPort(1965);
@@ -226,9 +231,7 @@ void GeminiCrawler::dispatchCrawl()
                     catch(std::exception& e) {
                         LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
                     }
-                    counter.reset();
-                    dispatchCrawl();
-                    co_return;
+                    loop_->queueInLoop([this](){dispatchCrawl();});
                 }
                 else if(ongoing_crawlings_ == 1) {
                     ended_ = true;
@@ -397,5 +400,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             , url.str(), 0, error);
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
             , url.str());
+        
+        if(error == "TimeOut")
+            host_timeout_count_[url.hostWithPort(1965)]++;
     }
 }

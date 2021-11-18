@@ -23,6 +23,7 @@ As of now, indexing of news sites, RFCs, documentations are mostly disabled. But
 * [nlohmann-json](https://github.com/nlohmann/json)
 * [CLI11](https://github.com/CLIUtils/CLI11)
 * [libfmt](https://github.com/fmtlib/fmt)
+* [TBB](https://github.com/oneapi-src/oneTBB)
 * iconv
 * PostgreSQL
 
