@@ -379,7 +379,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             const auto& meta = resp->getHeader("meta");
             co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
                 "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9 WHERE url = $1;",
-                url.str(), meta, meta.size(), "", "", status, meta, "", meta);
+                url.str(), meta, meta.size(), "", "", status, meta, "<gemini-request-info>", meta);
         }
         else {
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
