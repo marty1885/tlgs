@@ -9,6 +9,7 @@ RestartSec=1
 StartLimitBurst=5
 StartLimitIntervalSec=10
 User=tlgs
+WorkingDirectory=/etc/tlgs
 ExecStart=/usr/bin/tlgs_server /etc/tlgs/server_config.json
 
 [Install]

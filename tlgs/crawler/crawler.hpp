@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 #include <tbb/concurrent_unordered_map.h>
+#include <tbb/concurrent_queue.h>
 #include <trantor/net/EventLoop.h>
 #include <drogon/utils/coroutine.h>
 
@@ -19,7 +20,7 @@ public:
 
     void addUrl(const std::string& url)
     {
-        craw_queue_.push_back(url);
+        craw_queue_.push(url);
     }
 
     Task<std::optional<std::string>> getNextUrl();
@@ -55,7 +56,7 @@ public:
 protected:
     EventLoop* loop_;
     tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
-    std::vector<std::string> craw_queue_;
+    tbb::concurrent_queue<std::string> craw_queue_;
     size_t max_concurrent_connections_ = 1;
     std::atomic<size_t> ongoing_crawlings_ = 0;
     std::atomic<bool> ended_ = false;

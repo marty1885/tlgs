@@ -71,8 +71,6 @@ std::pair<std::string, std::unordered_map<std::string, std::string>> parseMime(c
 
 Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
 {
-    static std::mutex mtx;
-    std::lock_guard l(mtx);
     if(craw_queue_.empty()) {
         // co_return {};
         auto db = app().getDbClient();
@@ -85,16 +83,22 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
         if(urls.size() == 0)
             co_return {};
         
-        static std::mt19937 rng(std::random_device{}());
+        thread_local std::mt19937 rng(std::random_device{}());
+        std::vector<std::string> vec;
+        vec.reserve(urls.size());
         for(const auto& url : urls)
-            craw_queue_.push_back(url["url"].as<std::string>());
+            vec.push_back(url["url"].as<std::string>());
         // XXX: Half-working attempt as randomizing the crawling order.
-        std::shuffle(craw_queue_.begin(), craw_queue_.end(), rng);
+        std::shuffle(vec.begin(), vec.end(), rng);
+        for(auto&& url : vec)
+            craw_queue_.emplace(std::move(url));
+
     }
 
-    auto str = craw_queue_.back();
-    craw_queue_.pop_back();
-    co_return str;
+    std::string result;
+    if(craw_queue_.try_pop(result))
+        co_return result;
+    co_return {};
 }
 
 
