@@ -114,7 +114,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     // hardcoeded: don't crawl from localhost or uneeded files
     if(url.path() == "/robots.txt" || url.path() == "/favicon.txt")
         co_return false;
-    if(url.host().find("127.0.0.") == 0 || url.host() == "[::1]" || url.host() == "localhost")
+    if(url.host().starts_with("127.0.0.") || url.host() == "[::1]" || url.host() == "localhost")
         co_return false;
     if(inBlacklist(url.str()))
         co_return false;
@@ -348,7 +348,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     continue;
 
                 // avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
-                if(link_url.str().find(link_url.param()) == 0 && link_url.path().ends_with(".gmi"))
+                if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
                     link_url.withParam("");
 
                 bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();

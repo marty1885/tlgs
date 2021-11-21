@@ -3,7 +3,7 @@
 #include <sstream>
 #include <iostream>
 
-std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string> agents)
+std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string>& agents)
 {
     std::vector<std::string> disallowed_path; 
     std::stringstream ss;
@@ -37,7 +37,7 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
     return disallowed_path;
 }
 
-bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string> disallowed_paths)
+bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string>& disallowed_paths)
 {
     for(const auto& disallowed : disallowed_paths) {
         if(path == disallowed || path == disallowed+"/"

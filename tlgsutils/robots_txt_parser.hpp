@@ -6,6 +6,6 @@
 
 namespace tlgs
 {
-std::vector<std::string> parseRobotsTxt(const std::string& str, const std::set<std::string> agents);
-bool isPathBlocked(const std::string& str, const std::vector<std::string> disallowed);
+std::vector<std::string> parseRobotsTxt(const std::string& str, const std::set<std::string>& agents);
+bool isPathBlocked(const std::string& str, const std::vector<std::string>& disallowed);
 }

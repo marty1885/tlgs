@@ -368,7 +368,7 @@ bool evalFilter(const std::string_view host, const std::string_view content_type
         return false;
     
     auto content_it = std::find_if(filter.content_type.begin(), filter.content_type.end(), [content_type](const auto& content_constrant){
-        return content_constrant.negate ^ (content_type != "" && content_type.find(content_constrant.value) == 0);
+        return content_constrant.negate ^ (content_type != "" && content_type.starts_with(content_constrant.value));
     });
     if(!filter.content_type.empty() && content_it == filter.content_type.end())
         return false;
@@ -495,7 +495,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     std::string encoded_search_term = tlgs::urlEncode(input);
     data["search_result"] = std::move(search_result);
     data["title"] = sanitizeGemini(input) + " - TLGS Search";
-    data["verbose"] = req->path().find("/v/search") == 0;
+    data["verbose"] = req->path().starts_with("/v/search");
     data["encoded_search_term"] = encoded_search_term;
     data["total_results"] = total_results;
     data["current_page_idx"] = current_page_idx;
@@ -531,7 +531,7 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
         co_return resp;
     }
 
-    bool verbose = req->path().find("/v") == 0;
+    bool verbose = req->path().starts_with("/v");
     std::string search_path = verbose ? "/v/search" : "/search";
 
     auto resp = HttpResponse::newHttpResponse();

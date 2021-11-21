@@ -254,7 +254,7 @@ bool inBlacklist(const std::string& url_str)
     if(blacklist_domains.count(url.host()) != 0)
         return true;
     for(const auto& blocked : blacklist_urls) {
-        if(url.str().find(blocked) == 0)
+        if(url.str().starts_with(blocked))
             return true;
     }
 
