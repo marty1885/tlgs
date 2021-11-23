@@ -207,8 +207,10 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
             co_return {};
         can_crawl = co_await shouldCrawl(next_url.value());
         if(can_crawl == false) {
-            db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , next_url.value(), 0, std::string("blocked by robots"));
+            co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
+                , next_url.value());
         }
     } while(can_crawl == false);
 
@@ -273,16 +275,18 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         auto resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes); // 2.5MB
         int status = std::stoi(resp->getHeader("gemini-status"));
 
+        const auto& meta = resp->getHeader("meta");
+        auto [mime, mime_param] = parseMime(meta);
+        std::optional<std::string> charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
+        std::optional<std::string> lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
+        std::string title;
+        std::string body;
+        std::vector<std::string> cross_site_links;
+        std::vector<std::string> internal_links;
+        size_t body_size = resp->body().size();
+
         if(status/10 == 2) {
-            const auto& meta = resp->getHeader("meta");
-            auto [mime, mime_param] = parseMime(meta);
-            std::optional<std::string> charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
-            std::optional<std::string> lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
             std::vector<std::string> links;
-            std::string title;
-            std::string body;
-            size_t body_size;
-            body_size = resp->body().size();
             if(mime == "text/gemini") {
                 // Still convert UTF-8 to UTF-8 because iconv will ignore all errors and make postgre happy
                 std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
@@ -321,9 +325,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     title = url.str();
             }
 
-            co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
-            std::vector<std::string> cross_site_links;
-            std::vector<std::string> internal_links;
+            // TODO: Avoid parsing links when the content doesn't change
             for(const auto& link : links) {
                 auto link_url = tlgs::Url(link);
                 if(link_url.good()) {
@@ -331,6 +333,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                         continue;
                 }
                 else {
+                    // FIXME: The current algorithm does not handle paths with parameters
                     auto link_path = std::filesystem::path(link);
                     if(link_path.is_absolute())
                         link_url = tlgs::Url(url).withPath(link);
@@ -343,15 +346,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     }
                     link_url = link_url.withParam("").withDefaultPort(1965);
                 }
-                if(link_url.validate() == false) {
-                    LOG_WARN << "Link composition of " << url.str() << " and " << link <<" results in invalid URL";
-                    continue;
-                }
 
-                if(co_await shouldCrawl(link_url.str()) == false)
-                    continue;
-
-                // avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
+                // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
                 if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
                     link_url.withParam("");
 
@@ -360,37 +356,58 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     cross_site_links.push_back(link_url.str());
                 else
                     internal_links.push_back(link_url.str());
+            }
+        }
+        else if(status/10 == 1) {
+            body = meta;
+            title = meta;
+            body_size = meta.size();
+            mime = "<gemini-request-info>";
+        }
+        else {
+            // Nothing. We don't process them.
+            throw std::runtime_error("Gemini status: " + std::to_string(status));
+        }
+
+        // TODO: Guess the language of the content. Then index them with different parsers
+        // TODO: Only update the minimal parameters when we know the hash is the same
+        auto new_content_hash = drogon::utils::getMd5(body);
+        co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
+            "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
+            "cross_site_links = $10::json, internal_links = $11::json WHERE url = $1;",
+            url.str(), body, body_size, charset, lang, status, meta, mime, title
+            , nlohmann::json(cross_site_links).dump(), nlohmann::json(internal_links).dump());
+        // No reason to update if hash is the same
+        if(content_hash != new_content_hash) {
+            co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
+                "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
+                "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
+
+            co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
+            for(const auto& link : internal_links) {
+                tlgs::Url link_url(link);
                 co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7);"
-                    , url.str(), url.host(), url.port(), link_url.str(), is_cross_site, link_url.host(), link_url.port());
-                
+                    , url.str(), url.host(), url.port(), link_url.str(), false, link_url.host(), link_url.port());
+
+                if(co_await shouldCrawl(link_url.str()) == false)
+                    continue;
                 co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
                     "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
                     link_url.str(), link_url.host(), link_url.port());
             }
-            // TODO: Guess the language of the content. Then index them with different parsers
-            auto new_content_hash = drogon::utils::getMd5(body);
-            co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
-                "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
-                "cross_site_links = $10::json, internal_links = $11::json WHERE url = $1;",
-                url.str(), body, body_size, charset, lang, status, meta, mime, title
-                , nlohmann::json(cross_site_links).dump(), nlohmann::json(internal_links).dump());
-            // No reason to update if the hash is the same
-            if(content_hash != new_content_hash) {
-                co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
-                    "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
-                    "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
+            for(const auto& link : cross_site_links) {
+                tlgs::Url link_url(link);
+                co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7);"
+                    , url.str(), url.host(), url.port(), link_url.str(), true, link_url.host(), link_url.port());
+
+                if(co_await shouldCrawl(link_url.str()) == false)
+                    continue;
+                co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
+                    "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
+                    link_url.str(), link_url.host(), link_url.port());
             }
-        }
-        else if(status/10 == 1) {
-            const auto& meta = resp->getHeader("meta");
-            co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
-                "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9 WHERE url = $1;",
-                url.str(), meta, meta.size(), "", "", status, meta, "<gemini-request-info>", meta);
-        }
-        else {
-            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
-                , url.str(), status, resp->getHeader("meta"));
         }
     }
     catch(std::exception& e) {
