@@ -8,7 +8,7 @@ TLGS is a search engine for Gemini. It's slightly overengineered for what it cur
 * Parses and indexes textual contents on Gemninispace
 * Highly concurrent and asynchronous
 * Stores index on PostgreSQL
-* Developed for Linux. But should work on Windows, OpenBSD, HaikuOS, Mac OS, etc..
+* Developed for Linux. But should work on Windows, OpenBSD, HaikuOS, macOS, etc..
 * Only fetch headers for files it can't index to save bandwith and time
 * Handles all kinds of source encoding
 * Link analysis using the HITS algorithm
