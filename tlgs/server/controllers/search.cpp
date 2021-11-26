@@ -576,7 +576,7 @@ Task<HttpResponsePtr> SearchController::backlinks(HttpRequestPtr req)
             internal_backlinks.push_back(url);
     }
     HttpViewData data;
-    data["title"] = "Backliks to " + url.str() + " - TLGS Search";
+    data["title"] = "Backlinks to " + url.str() + " - TLGS Search";
     data["internal_backlinks"] = internal_backlinks;
     data["external_backlinks"] = external_backlinks;
     auto resp = HttpResponse::newHttpViewResponse("backlinks", data);
