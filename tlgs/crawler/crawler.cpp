@@ -302,7 +302,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 links = std::move(doc.links);
                 title = std::move(doc.title);
                 if(title.empty() && url.port() == 1965) {
-                    std::string tmp = tlgs::Url(url).withPort(0).str();
+                    std::string tmp = url.str();
                     title = tmp;
                 }
                 else if(title.empty() && url.port() != 1965)
@@ -314,18 +314,12 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 if(body.size() < resp->body().size()/10) { // apprantly this is a binary file or totally broken
                     throw std::runtime_error("Seeming binary files sent as text");
                 }
-                if(url.port() == 1965)
-                    title = tlgs::Url(url).withPort(0).str();
-                else
-                    title = url.str();
+                title = url.str();
             }
             else {
                 body.clear();
                 body_size = 0;
-                if(url.port() == 1965)
-                    title = tlgs::Url(url).withPort(0).str();
-                else
-                    title = url.str();
+                title = url.str();
             }
 
             // TODO: Avoid parsing links when the content doesn't change
