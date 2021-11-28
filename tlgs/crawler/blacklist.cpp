@@ -224,8 +224,11 @@ bool inBlacklist(const std::string& url_str)
         "gemini://gemini.rob-bolton.co.uk/songs",
 
         // Text based game
-        "gemini://gthudson.xyz/cgi-bin/quietplace.cgi"
-        "gemini://futagoza.gamiri.com/gmninkle/"
+        "gemini://gthudson.xyz/cgi-bin/quietplace.cgi",
+        "gemini://futagoza.gamiri.com/gmninkle/",
+
+        // Timeout but doesn't actually trigger timeout
+        "gemini://202x.moe/resonance"
     };
 
     if(url.str().find(".git/tree/") != std::string::npos)
