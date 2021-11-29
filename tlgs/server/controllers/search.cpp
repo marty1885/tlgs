@@ -221,7 +221,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
                 node.text_rank = link["rank"].as<double>();
                 node.size = link["size"].as<int64_t>();
                 node.content_type = link["content_type"].as<std::string>();
-                node.is_root = node.is_root == 0; // Since the only reason for rank == 0 is it's in the base but not root
+                node.is_root = node.text_rank != 0; // Since the only reason for rank == 0 is it's in the base but not root
                 nodes.emplace_back(std::move(node));
                 node_table[source_url] = nodes.size()-1;
             }
@@ -339,8 +339,8 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
         return a.score > b.score;
     });
     if(find_auths) {
-        nodes = std::vector<HitsNode>(nodes.begin(), std::upper_bound(nodes.begin(), nodes.end(), true
-            , [](bool t, const auto& node){ return node.is_root; }));
+        nodes = std::vector<HitsNode>(nodes.begin(), std::lower_bound(nodes.begin(), nodes.end(), true
+            , [](const auto& node, bool){ return node.is_root; }));
     }
 
     std::vector<RankedResult> search_result;
