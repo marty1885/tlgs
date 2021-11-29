@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <drogon/HttpController.h>
 #include <drogon/utils/coroutine.h>
 #include <drogon/HttpAppFramework.h>
@@ -67,6 +68,7 @@ struct HitsNode
     float new_hub_score = 1;
     float text_rank = 0;
     float score = 0;
+    bool is_root = false;
 };
 
 enum class TokenType
@@ -159,7 +161,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
             else if(key == "domain")
                 filter.domain.push_back({std::string(value), negate});
             else if(key == "size") {
-                std::regex re(R"(([><])([\.0-9]+)([GBKMibyte]+)?)", std::regex_constants::icase);
+                static const std::regex re(R"(([><])([\.0-9]+)([GBKMibyte]+)?)", std::regex_constants::icase);
                 std::smatch match;
                 if(std::regex_match(value, match, re) == false) {
                     LOG_DEBUG << "Bad size filter: " << token;
@@ -219,6 +221,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
                 node.text_rank = link["rank"].as<double>();
                 node.size = link["size"].as<int64_t>();
                 node.content_type = link["content_type"].as<std::string>();
+                node.is_root = node.is_root == 0; // Since the only reason for rank == 0 is it's in the base but not root
                 nodes.emplace_back(std::move(node));
                 node_table[source_url] = nodes.size()-1;
             }
@@ -331,8 +334,14 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
     }
 
     std::sort(nodes.begin(), nodes.end(), [](const auto& a, const auto& b) {
+        if(a.is_root != b.is_root)
+            return a.is_root;
         return a.score > b.score;
     });
+    if(find_auths) {
+        nodes = std::vector<HitsNode>(nodes.begin(), std::upper_bound(nodes.begin(), nodes.end(), true
+            , [](bool t, const auto& node){ return node.is_root; }));
+    }
 
     std::vector<RankedResult> search_result;
     search_result.reserve(nodes.size());
