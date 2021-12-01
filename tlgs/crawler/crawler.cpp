@@ -73,28 +73,36 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
 {
     if(craw_queue_.empty()) {
         // co_return {};
-        static std::mutex mtx;
-        std::unique_lock lk(mtx);
-        if(craw_queue_.empty()) {
-            auto db = app().getDbClient();
-            // XXX: I really want to have a proper job queue. But using SQL is good enought for now
-            // HACK: This query can cause data race on it self. The mutex is to prevent multiple queries fire at the same time
-            auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
-                "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT 120) RETURNING url");
-            if(urls.size() == 0)
-                co_return {};
-            
-            thread_local std::mt19937 rng(std::random_device{}());
-            std::vector<std::string> vec;
-            vec.reserve(urls.size());
-            for(const auto& url : urls)
-                vec.push_back(url["url"].as<std::string>());
-            // XXX: Half-working attempt as randomizing the crawling order.
-            std::shuffle(vec.begin(), vec.end(), rng);
-            for(auto&& url : vec)
-                craw_queue_.emplace(std::move(url));
+        auto db = app().getDbClient();
+        while(true) {
+            bool transaction_failed = false;
+            try {
+                // XXX: I really want to have a proper job queue. But using SQL is good enought for now
+                auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
+                    "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+                    "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
+                    "LIMIT 120) RETURNING url");
+                if(urls.size() == 0)
+                    co_return {};
+                
+                thread_local std::mt19937 rng(std::random_device{}());
+                std::vector<std::string> vec;
+                vec.reserve(urls.size());
+                for(const auto& url : urls)
+                    vec.push_back(url["url"].as<std::string>());
+                // XXX: Half-working attempt as randomizing the crawling order.
+                std::shuffle(vec.begin(), vec.end(), rng);
+                for(auto&& url : vec)
+                    craw_queue_.emplace(std::move(url));
+                break;
+            }
+            catch(std::exception& e) {
+                // Only keep trying if is a transaction rollback
+                if(std::string_view(e.what()).find("Transaction") != std::string_view::npos ||
+                    std::string_view(e.what()).find("transaction") != std::string_view::npos) {
+                    throw;
+                }
+            }
         }
     }
 
