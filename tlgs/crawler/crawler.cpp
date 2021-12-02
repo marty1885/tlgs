@@ -283,7 +283,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
         // HACK: Only fetch headers of text files
         static const std::vector<std::string> index_mimes = {"text/gemini", "text/plain", "text/markdown", "text/x-rst", "plaintext"};
-        auto resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes); // 2.5MB
+        auto resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes, 25.0); // 2.5MB
         int status = std::stoi(resp->getHeader("gemini-status"));
 
         const auto& meta = resp->getHeader("meta");
