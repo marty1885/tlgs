@@ -17,6 +17,8 @@
 #include <trantor/utils/Logger.h>
 #include <tlgsutils/counter.hpp>
 
+#include <tbb/concurrent_unordered_map.h>
+
 #include "iconv.hpp"
 #include "blacklist.hpp"
 
@@ -144,7 +146,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
 
     // TODO: Use a LRU cache
     const std::string cache_key = url.hostWithPort(1965);
-    static std::unordered_map<std::string, std::vector<std::string>> policy_cache;
+    static tbb::concurrent_unordered_map<std::string, std::vector<std::string>> policy_cache;
     auto it = policy_cache.find(cache_key);
     if(it != policy_cache.end()) {
         if(it->second.size() == 0)
