@@ -104,6 +104,14 @@ Task<HttpResponsePtr> ToolsController::add_seed(HttpRequestPtr req)
         resp->setStatusCode((HttpStatusCode)10);
         co_return resp;
     }
+    if(req->getHeader("protocol") != "gemini")
+    {
+        auto resp = HttpResponse::newHttpResponse();
+        resp->setBody("We only accept links directly through Gemini");
+        resp->setContentTypeCode(CT_TEXT_PLAIN);
+        resp->setStatusCode(k403Forbidden);
+        co_return resp;
+    }
 
     // HACK: Force slow down
     co_await drogon::sleepCoro(app().getLoop(), 0.75);
