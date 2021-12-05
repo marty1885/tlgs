@@ -68,15 +68,24 @@ Url::Url(const std::string& str, bool normalize_url)
     else 
         sv = sv.substr(idx+1);
     // Find path
-    idx = sv.find('?');
+    idx = sv.find_first_of("?#");
     path_ = "/"+std::string(sv.substr(0, idx));
     if(normalize_url)
         normalize();
     if(idx == std::string_view::npos)
         return;
     // Find param
-    param_ = sv.substr(idx+1);
-    good_ = true;
+    if(sv[idx] == '?') {
+        sv = sv.substr(idx+1);
+        idx = sv.find('#');
+        param_ = sv.substr(0, idx);
+    }
+
+    // Find fragment
+    if(idx == std::string_view::npos)
+        return;
+    sv = sv.substr(idx+1);
+    fragment_ = sv;
 }
 
 std::string Url::str() const
@@ -87,6 +96,8 @@ std::string Url::str() const
     res += path_;
     if(!param_.empty())
         res += "?"+param_;
+    if(!fragment_.empty())
+        res += "#"+fragment_;
     return res;
 }
 
@@ -148,6 +159,12 @@ Url& Url::withDefaultPort(unsigned short n)
     return *this;
 }
 
+Url& Url::withFragment(const std::string& new_fragment)
+{
+    param_ = new_fragment;
+    return *this;
+}
+
 Url& Url::normalize()
 {
     std::transform(protocol_.begin(), protocol_.end(), protocol_.begin(), ::tolower);
@@ -184,6 +201,12 @@ const std::string& Url::param() const
 {
     return param_;
 }
+
+const std::string& Url::fragment() const
+{
+    return fragment_;
+}
+
 
 int Url::protocolDefaultPort(const std::string_view& proto)
 {

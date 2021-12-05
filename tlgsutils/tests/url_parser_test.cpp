@@ -62,5 +62,20 @@ DROGON_TEST(UrlParserTest)
     url = tlgs::Url("gemini://localhost:1965/aaa");
     CHECK(url.good() == true);
     CHECK(url.path() == "/aaa");
+    CHECK(url.param() == "");
+    CHECK(url.fragment() == "");
     CHECK(url.str() == "gemini://localhost/aaa");
+
+    url = tlgs::Url("gemini://localhost/aaa#123");
+    CHECK(url.good() == true);
+    CHECK(url.path() == "/aaa");
+    CHECK(url.fragment() == "123");
+    CHECK(url.str() == "gemini://localhost/aaa#123");
+
+    url = tlgs::Url("gemini://localhost/aaa?456#123");
+    CHECK(url.good() == true);
+    CHECK(url.path() == "/aaa");
+    CHECK(url.param() == "456");
+    CHECK(url.fragment() == "123");
+    CHECK(url.str() == "gemini://localhost/aaa?456#123");
 }

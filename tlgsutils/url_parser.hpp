@@ -23,6 +23,7 @@ struct Url
     Url& withPort();
     Url& withDefaultPort(unsigned short n);
     Url& normalize();
+    Url& withFragment(const std::string& new_fragment);
     inline bool validate()
     {
         good_ = !protocol_.empty() && !host_.empty() && !path_.empty();
@@ -40,6 +41,7 @@ struct Url
     const std::string& host() const;
     const std::string& path() const;
     const std::string& param() const;
+    const std::string& fragment() const;
 
     static int protocolDefaultPort(const std::string_view& proto);
 
@@ -49,6 +51,7 @@ protected:
     int port_ = 0;
     std::string path_;
     std::string param_;
+    std::string fragment_;
     bool good_ = true;
     int default_port_;
 };

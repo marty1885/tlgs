@@ -100,8 +100,8 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
             }
             catch(std::exception& e) {
                 // Only keep trying if is a transaction rollback
-                if(std::string_view(e.what()).find("Transaction") != std::string_view::npos ||
-                    std::string_view(e.what()).find("transaction") != std::string_view::npos) {
+                if(std::string_view(e.what()).find("deadlock") == std::string_view::npos &&
+                    std::string_view(e.what()).find("transaction") == std::string_view::npos) {
                     throw;
                 }
             }
@@ -334,6 +334,12 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 
             // TODO: Avoid parsing links when the content doesn't change
             for(const auto& link : links) {
+                const static std::regex re("[^\\/]+:[^\\/]+");
+                std::smatch sm;
+                // Ignore links like mailto:joe@example.com 
+                if(std::regex_match(link, sm, re))
+                    continue;
+
                 auto link_url = tlgs::Url(link);
                 if(link_url.good()) {
                     if(link_url.protocol() != "gemini")
@@ -351,7 +357,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                         else
                             link_url = tlgs::Url(url).withPath((current_path.parent_path()/link_path).generic_string());
                     }
-                    link_url = link_url.withParam("").withDefaultPort(1965);
+                    link_url = link_url.withParam("").withDefaultPort(1965).withFragment("");
                 }
 
                 // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
