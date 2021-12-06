@@ -283,10 +283,15 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         auto content_hash = have_record ? drogon::utils::getMd5(record[0]["content_body"].as<std::string>()) : "";
         std::string extension = std::filesystem::path(url.path()).extension().generic_string();
         std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        // HACK: Only fetch headers of text files
+        // HACK: Only fetch headers of non text files
         static const std::vector<std::string> index_mimes = {"text/gemini", "text/plain", "text/markdown", "text/x-rst", "plaintext"};
-        auto resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes, 25.0); // 2.5MB
-        int status = std::stoi(resp->getHeader("gemini-status"));
+        HttpResponsePtr resp;
+        int redirection_count = 0;
+        int status;
+        do {
+            resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes, 25.0); // 2.5MB
+            status = std::stoi(resp->getHeader("gemini-status"));
+        } while(status / 10 == 3 && redirection_count++ < 5);
 
         const auto& meta = resp->getHeader("meta");
         auto [mime, mime_param] = parseMime(meta);
