@@ -339,10 +339,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 
             // TODO: Avoid parsing links when the content doesn't change
             for(const auto& link : links) {
-                const static std::regex re("[^\\/]+:[^\\/]+");
-                std::smatch sm;
-                // Ignore links like mailto:joe@example.com 
-                if(std::regex_match(link, sm, re))
+                if(tlgs::isNonUriAction(link))
                     continue;
 
                 auto link_url = tlgs::Url(link);

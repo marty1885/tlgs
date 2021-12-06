@@ -1,4 +1,5 @@
 #include "utils.hpp"
+#include <regex>
 #include <filesystem>
 #include <iostream>
 #include <cassert>
@@ -97,4 +98,14 @@ tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
         link_url.withParam(dummy.param()).withFragment(dummy.fragment());
     }
     return link_url;
+}
+
+bool tlgs::isNonUriAction(const std::string& str)
+{
+    const static std::regex re("[^\\/]+:[^\\/]+");
+    std::smatch sm;
+    // Ignore links like mailto:joe@example.com 
+    if(std::regex_match(str, sm, re))
+        return true;
+    return false;
 }

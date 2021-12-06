@@ -119,3 +119,10 @@ DROGON_TEST(LinkCompositionTest)
     path = "dir?789";
     CHECK(tlgs::linkCompose(url, path).str() == "gemini://127.0.0.1/dir?789");
 }
+
+DROGON_TEST(NonUriActionTest)
+{
+  CHECK(tlgs::isNonUriAction("javascript:void(2)") == true);
+  CHECK(tlgs::isNonUriAction("mailto:tom@example.com") == true);
+  CHECK(tlgs::isNonUriAction("gemini://localhost") == false);
+}
