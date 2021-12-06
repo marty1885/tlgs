@@ -351,19 +351,10 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                         continue;
                 }
                 else {
-                    // FIXME: The current algorithm does not handle paths with parameters
-                    auto link_path = std::filesystem::path(link);
-                    if(link_path.is_absolute())
-                        link_url = tlgs::Url(url).withPath(link);
-                    else {
-                        auto current_path = std::filesystem::path(url.path());
-                        if(url.path().back() == '/') // we are visiting a directory  
-                            link_url = tlgs::Url(url).withPath((current_path/link_path).generic_string());
-                        else
-                            link_url = tlgs::Url(url).withPath((current_path.parent_path()/link_path).generic_string());
-                    }
-                    link_url = link_url.withParam("").withDefaultPort(1965).withFragment("");
+                    link_url = linkCompose(url, link);
                 }
+                // We shall not send fragments
+                link_url.withFragment("");
 
                 // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
                 if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))

@@ -68,3 +68,54 @@ DROGON_TEST(AsciiArtDetectorTest)
     )";
     CHECK(tlgs::isAsciiArt(s) == true);
 }
+
+DROGON_TEST(LinkCompositionTest)
+{
+    auto url = tlgs::Url("gemini://localhost/");
+    std::string path = "/dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
+
+    url = tlgs::Url("gemini://localhost/asd");
+    path = "/dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
+
+    url = tlgs::Url("gemini://localhost/asd");
+    path = "dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
+
+    url = tlgs::Url("gemini://localhost/asd/");
+    path = "dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/asd/dir");
+
+    url = tlgs::Url("gemini://localhost/asd/");
+    path = "dir/";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/asd/dir/");
+
+    url = tlgs::Url("gemini://localhost/asd#123456");
+    path = "dir/";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir/");
+
+    url = tlgs::Url("gemini://localhost/asd#123456");
+    path = "dir#789";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir#789");
+
+    url = tlgs::Url("gemini://localhost/asd/zxc");
+    path = "../dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/asd/dir");
+
+    url = tlgs::Url("gemini://localhost/asd?123");
+    path = "dir";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
+
+    url = tlgs::Url("gemini://localhost/asd");
+    path = "dir?123";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir?123");
+
+    url = tlgs::Url("gemini://localhost/asd#123");
+    path = "dir?789";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir?789");
+
+    url = tlgs::Url("gemini://127.0.0.1/asd#123");
+    path = "dir?789";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://127.0.0.1/dir?789");
+}

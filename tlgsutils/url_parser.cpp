@@ -161,7 +161,7 @@ Url& Url::withDefaultPort(unsigned short n)
 
 Url& Url::withFragment(const std::string& new_fragment)
 {
-    param_ = new_fragment;
+    fragment_ = new_fragment;
     return *this;
 }
 

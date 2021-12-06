@@ -1,4 +1,7 @@
 #include "utils.hpp"
+#include <filesystem>
+#include <iostream>
+#include <cassert>
 
 static std::string charToHex(char c)
 {
@@ -73,4 +76,25 @@ std::string tlgs::urlEncode(const std::string_view src)
     }
 
     return result;
+}
+
+tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
+{
+    assert(path.size() != 0);
+    tlgs::Url link_url;
+    if(path[0] == '/') {
+        tlgs::Url dummy = tlgs::Url("gemini://localhost"+path);
+        link_url = tlgs::Url(url).withPath(dummy.path()).withParam(dummy.param()).withFragment(dummy.fragment());
+    }
+    else {
+        tlgs::Url dummy = tlgs::Url("gemini://localhost/"+path);
+        auto link_path = std::filesystem::path(dummy.path().substr(1));
+        auto current_path = std::filesystem::path(url.path());
+        if(url.path().back() == '/') // we are visiting a directory  
+            link_url = tlgs::Url(url).withPath((current_path/link_path).generic_string());
+        else
+            link_url = tlgs::Url(url).withPath((current_path.parent_path()/link_path).generic_string());
+        link_url.withParam(dummy.param()).withFragment(dummy.fragment());
+    }
+    return link_url;
 }

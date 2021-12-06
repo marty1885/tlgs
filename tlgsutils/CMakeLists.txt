@@ -1,6 +1,7 @@
 find_package(Drogon REQUIRED)
 add_library(tlgsutils gemini_parser.cpp robots_txt_parser.cpp url_parser.cpp utils.cpp)
 target_link_libraries(tlgsutils PUBLIC Drogon::Drogon dremini)
+target_compile_features(tlgsutils PRIVATE cxx_std_20)
 
 if(TLGS_BUILD_TESTS)
     add_executable(tlgsutils_test tests/main.cpp
