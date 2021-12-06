@@ -48,7 +48,7 @@ Task<HttpResponsePtr> ToolsController::statistics(HttpRequestPtr req)
         server_stat->domain_count = domain_count;
         server_stat->content_type_count = std::move(content_type_count);
         server_stat->update_time = trantor::Date::now().toCustomedFormattedString("%Y-%m-%d %H:%M:%S", false);
-        cache.insert("stats", server_stat, 3600*6);
+        cache.insert("server_stat", server_stat, 3600*6);
     }
 
     HttpViewData data;
