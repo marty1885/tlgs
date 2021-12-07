@@ -9,6 +9,7 @@
 #include <ranges>
 #include <atomic>
 #include <regex>
+#include <fmt/core.h>
 
 #include "search_result.hpp"
 
@@ -204,6 +205,10 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
     auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
         "0 AS rank FROM pages JOIN links ON pages.url=links.to_url WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
         , query_str);
+    if(nodes_of_intrest.size() == 0) {
+        LOG_DEBUG << "DB returned no root set";
+        co_return {};
+    }
 
     std::unordered_map<std::string, size_t> node_table;
     std::vector<HitsNode> nodes;
@@ -231,8 +236,6 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string q
     LOG_DEBUG << "DB returned " << nodes.size() << " pages";
     LOG_DEBUG << "Root set: " << nodes_of_intrest.size() << " pages";
     LOG_DEBUG << "Base set: " << nodes.size() - nodes_of_intrest.size() << " pages";
-    if(nodes.size() == 0)
-        co_return {};
 
     // populate links between nodes
     auto getIfExists= [&](const std::string& name) -> HitsNode* {
@@ -516,7 +519,8 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     auto t2 = high_resolution_clock::now();
     double processing_time = duration_cast<duration<double>>(t2 - t1).count();
-    LOG_DEBUG << "Searching took " << (cached?"(cached) ":"") << processing_time << " seconds.";
+    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds."
+        , input, (cached?"(cached) ":""), processing_time);
     co_return resp;
 }
 
