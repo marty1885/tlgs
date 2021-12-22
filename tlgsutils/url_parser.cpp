@@ -53,13 +53,12 @@ Url::Url(const std::string& str, bool normalize_url)
             return;
         }
         try {
-            stoi(std::string(port_sv));
+            port_ = std::stoi(std::string(port_sv));
         }
         catch(...) {
             good_ = false;
             return;
         }
-        port_ = std::stoi(std::string(port_sv));
         if(idx != std::string_view::npos)
             sv = sv.substr(idx+1);
         else

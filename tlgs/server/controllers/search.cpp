@@ -42,7 +42,7 @@ public:
     METHOD_LIST_END
 
 
-    Task<std::vector<RankedResult>> hitsSearch(const std::string query_str, bool find_auths = true);
+    Task<std::vector<RankedResult>> hitsSearch(const std::string& query_str, bool find_auths = true);
     std::atomic<size_t> search_in_flight{0};
 };
 
@@ -195,7 +195,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
     return {search_query, filter};
 }
 // Search with scoring using the HITS algorithm
-Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string query_str, bool find_auths)
+Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& query_str, bool find_auths)
 {
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "

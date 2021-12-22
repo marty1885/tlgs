@@ -32,7 +32,7 @@ struct Counter
             (*counter_)--;
     }
 
-    size_t count_;
+    size_t count_ = -1;
     std::atomic<size_t>* counter_;
 };
 
