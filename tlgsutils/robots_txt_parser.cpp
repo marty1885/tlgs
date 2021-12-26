@@ -3,6 +3,7 @@
 #include <set>
 #include <sstream>
 #include <iostream>
+#include <filesystem>
 
 std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string>& agents)
 {
@@ -44,13 +45,54 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
     return std::vector<std::string>(disallowed_path.begin(), disallowed_path.end());
 }
 
+
+/**
+ * @brief Very basic and limited wildcard matching. Only supports a selected common cases
+ *  1. No wildcard
+ *  2. Starts with *
+ *  3. Ends with *
+ *  4. Starts with * and ends with $
+ *  5. Starts with * and ends with *
+ *  6. Contains * in the middle
+ * 
+ * @param pattern the wildcard pattern
+ * @param str the string to match
+ */
+static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
+{
+    if(pattern.empty())
+        return false;
+    if(pattern.find('*') == std::string_view::npos) {
+        return str == pattern || str == pattern+"/"
+            || (str.size() > pattern.size()+1 && str.starts_with(pattern) && (str[pattern.size()] == '/' || pattern.back() == '/'));
+    }
+
+    if(pattern.back() == '$' && (pattern.starts_with("*") || pattern.starts_with("/*")))
+        pattern.pop_back();
+
+    if(pattern[0] == '*' && pattern.back() == '*' && pattern.size() > 2)
+        return str.find(pattern.substr(1, pattern.size()-2)) != std::string_view::npos;
+    if(pattern.starts_with("/*") && pattern.back() == '*' && pattern.size() > 3)
+        return str.find(pattern.substr(2, pattern.size()-3)) != std::string_view::npos;
+    if(pattern[0] == '*')
+        return str.ends_with(pattern.substr(1));
+    if(pattern.starts_with("/*"))
+        return str.ends_with(pattern.substr(2));
+    if(pattern.back() == '*')
+        return str.starts_with(pattern.substr(0, pattern.size() - 1));
+    
+    // Else * must be in the middle
+    auto n = pattern.find("*");
+    if(n == std::string_view::npos)
+        return false;
+    return str.starts_with(pattern.substr(0, n)) && str.rfind(pattern.substr(n+1)) > n;
+}
+
 bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string>& disallowed_paths)
 {
     for(const auto& disallowed : disallowed_paths) {
-        if(path == disallowed || path == disallowed+"/"
-            || (path.size() > disallowed.size()+1 && path.find(disallowed) == 0 && (path[disallowed.size()] == '/' || disallowed.back() == '/'))) {
+        if(wildcardPathMatch(disallowed, path))
             return true;
-        }
     }
     return false;
 }

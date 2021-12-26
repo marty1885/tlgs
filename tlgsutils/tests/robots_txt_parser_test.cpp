@@ -84,4 +84,13 @@ DROGON_TEST(BlockedPathTest)
     CHECK(tlgs::isPathBlocked("/foo/", {"/foo/bar"}) == false);
     CHECK(tlgs::isPathBlocked("/foo.txt", {"/foo"}) == false);
     CHECK(tlgs::isPathBlocked("/foo/bar.txt", {"/foo"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/bar.txt", {"/foo/*"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/bar.txt", {"*.txt"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/bar.txt", {"*.ogg"}) == false);
+    CHECK(tlgs::isPathBlocked("/foo/dir1/bar.txt", {"*.txt"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/dir1/bar.txt", {"*.txt$"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/some_dir/bar.txt", {"*some_dir*"}) == true);
+    CHECK(tlgs::isPathBlocked("/foo/other_dir/bar.txt", {"*some_dir*"}) == false);
+    CHECK(tlgs::isPathBlocked("/foo/other_dir/baz/bar.txt", {"/foo/*/baz"}) == true);
+    CHECK(tlgs::isPathBlocked("/~testuser/gci-bin/test.txt", {"/~*/cgi-bin/"}) == true);
 }
