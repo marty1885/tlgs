@@ -231,6 +231,8 @@ bool inBlacklist(const std::string& url_str)
         "gemini://202x.moe/resonance"
     };
 
+    if(url.host().starts_with("git."))
+        return true;
     if(url.str().find(".git/tree/") != std::string::npos)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
@@ -253,6 +255,8 @@ bool inBlacklist(const std::string& url_str)
         if(std::regex_match(commit, sm, re))
             return true;
     }
+    if(url.str().starts_with("/git/"))
+        return true;
 
     if(blacklist_domains.count(url.host()) != 0)
         return true;
