@@ -62,6 +62,14 @@ DROGON_TEST(RobotTextTest)
     robots = "";
     disallowed = tlgs::parseRobotsTxt(robots, {"tlgs", "*"});
     REQUIRE(disallowed.size() == 0);
+
+    robots =
+        "User-agent: indexer\n"
+        "Disallow: /test\n"
+        "User-agent: researcher\n"
+        "Disallow: /\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
 }
 
 DROGON_TEST(BlockedPathTest)
