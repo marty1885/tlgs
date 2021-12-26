@@ -1,11 +1,12 @@
 #include "robots_txt_parser.hpp"
 #include <regex>
+#include <set>
 #include <sstream>
 #include <iostream>
 
 std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string>& agents)
 {
-    std::vector<std::string> disallowed_path; 
+    std::set<std::string> disallowed_path; 
     std::stringstream ss;
     ss << str;
     static const std::regex line_re(R"((.*):[ \t](.*))");
@@ -37,10 +38,10 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
             if(path.empty())
                 disallowed_path.clear();
             else
-                disallowed_path.push_back(path);
+                disallowed_path.insert(path);
         }
     }
-    return disallowed_path;
+    return std::vector<std::string>(disallowed_path.begin(), disallowed_path.end());
 }
 
 bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string>& disallowed_paths)
