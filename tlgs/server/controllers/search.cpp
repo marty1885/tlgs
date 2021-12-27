@@ -452,12 +452,14 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     size_t total_results = filtered_result->size();
 
     const size_t item_per_page = 10;
-    auto being = filtered_result->begin()+item_per_page*current_page_idx;
+    auto begin = filtered_result->begin()+item_per_page*current_page_idx;
     auto end = filtered_result->begin()+std::min(item_per_page*(current_page_idx+1), filtered_result->size());
+    if(begin > end)
+        begin = end;
     // XXX: Drogon's raw SQL querys does not support arrays/sets 
     // Preperbally a bad idea to use string concat for SQL. But we do ignore bad strings
     std::string url_array;
-    for(const auto& item : std::ranges::subrange(being, end)) {
+    for(const auto& item : std::ranges::subrange(begin, end)) {
         if(item.url.find('\'') == std::string::npos)
             url_array += "'"+item.url+"', ";
     }
@@ -479,7 +481,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
             result_idx[page["url"].as<std::string>()] = i;
         }
 
-        for(const auto& item : std::ranges::subrange(being, end)) {
+        for(const auto& item : std::ranges::subrange(begin, end)) {
             auto it = result_idx.find(item.url);
             if(it == result_idx.end()) {
                 LOG_WARN << "Somehow found " << item.url << " in search. But that URL does not exist in DB";

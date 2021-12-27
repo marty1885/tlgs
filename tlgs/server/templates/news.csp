@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2021-12-27
+
+The crawler is updated to handle common wildcard patterns and server stablity is improved. Hopefully redusing trobles people have with TLGS.
+
 ### 2021-12-4
 
 TLGS has a common-web interface! You can search content on Gemini from common web. It does not proxy content from outside of TLGS's site. You still need a Gemini browser to browse searched result.
