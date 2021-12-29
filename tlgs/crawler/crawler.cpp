@@ -27,7 +27,7 @@ using namespace dremini;
 using namespace trantor;
 
 
-std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
+static std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
 {
     // still perform conversion event if source encoding is the same as destination encoding
     // because the input string might have bad encoding
@@ -42,7 +42,7 @@ std::string tryConvertEncoding(const std::string_view& str, const std::string& s
     return res;
 }
 
-std::pair<std::string, std::unordered_map<std::string, std::string>> parseMime(const std::string& mime)
+static std::pair<std::string, std::unordered_map<std::string, std::string>> parseMime(const std::string& mime)
 {
     std::string mime_str;
     std::unordered_map<std::string, std::string> params;
@@ -145,6 +145,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         co_return false;
 
     // TODO: Use a LRU cache
+    // Consult the database to see if this URL is in robots.txt. Contents from the DB is cache locally to 
+    // redule the number of DB queries
     const std::string cache_key = url.hostWithPort(1965);
     static tbb::concurrent_unordered_map<std::string, std::vector<std::string>> policy_cache;
     auto it = policy_cache.find(cache_key);
@@ -160,26 +162,26 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         "WHERE host = $1 AND port = $2 AND last_crawled_at > CURRENT_TIMESTAMP - INTERVAL '7' DAY", url.host(), url.port());
     std::vector<std::string> disallowed_path;
     if(policy_status.size() == 0) {
-        LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking for robots.txt";
-        std::string robot_txt_content;
-        int gemini_status = 0;
-        std::string content_type;
-        bool have_robots_txt = false;
+        LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
+        HttpResponsePtr resp;
         try {
             std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").str();
             LOG_TRACE << "Fetching robots.txt from " << robot_url;
-            auto resp = co_await dremini::sendRequestCoro(robot_url, 10, loop_, 0x2625a0);
-            auto [mime, _] = parseMime(resp->contentTypeString());
-            gemini_status = std::stoi(resp->getHeader("gemini-status"));
-            robot_txt_content = std::string(resp->body());
-            content_type = std::move(mime);
+            resp = co_await dremini::sendRequestCoro(robot_url, 10, loop_, 0x2625a0);
         }
         catch(std::exception& e) {
-            // TODO: Site may no longer exist
+            // XXX: Failed to handshake with the host. We should retry later
+            // Shoud we cache the result as no policy is available?
+            // policy_cache[cache_key] = {};
+            co_return true;
         }
-        // Don't have a robots.txt. Allow all crawler
-        if(gemini_status == 20 && content_type == "text/plain") {
-            disallowed_path = tlgs::parseRobotsTxt(robot_txt_content, {"*", "tlgs", "indexer"});
+
+        assert(resp != nullptr);
+        auto [mime, _] = parseMime(resp->contentTypeString());
+        int status = std::stoi(resp->getHeader("gemini-status"));
+        bool have_robots_txt = status == 20 && mime == "text/plain";
+        if(have_robots_txt) {
+            disallowed_path = tlgs::parseRobotsTxt(std::string(resp->body()), {"*", "tlgs", "indexer"});
             have_robots_txt = true;
         }
 
@@ -239,7 +241,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
 void GeminiCrawler::dispatchCrawl()
 {
     while(!ended_) {
-        auto counter =  std::make_shared<tlgs::Counter>(ongoing_crawlings_);
+        auto counter = std::make_shared<tlgs::Counter>(ongoing_crawlings_);
         if(counter->count() < max_concurrent_connections_) {
             loop_->queueInLoop(async_func([counter, this]() mutable -> Task<void> {
                 auto url_str = co_await getNextCrawlPage();
@@ -272,6 +274,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     try {
         auto record = co_await db->execSqlCoro("SELECT url, content_body FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
+        auto content_hash = have_record ? drogon::utils::getMd5(record[0]["content_body"].as<std::string>()) : ""; // TODO: Use blake2b
 
         if(!have_record) {
             co_await db->execSqlCoro("INSERT INTO pages(url, domain_name, port, first_seen_at)"
@@ -279,89 +282,54 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 url.str(), url.host(), url.port());
         }
 
-        // TODO: Use blake2b
-        auto content_hash = have_record ? drogon::utils::getMd5(record[0]["content_body"].as<std::string>()) : "";
-        std::string extension = std::filesystem::path(url.path()).extension().generic_string();
-        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        // HACK: Only fetch headers of non text files
-        static const std::vector<std::string> index_mimes = {"text/gemini", "text/plain", "text/markdown", "text/x-rst", "plaintext"};
+        // Only fetch the entire page for content types we can handle.
+        static const std::vector<std::string> indexd_mimes = {"text/gemini", "text/plain", "text/markdown", "text/x-rst", "plaintext"};
         HttpResponsePtr resp;
         int redirection_count = 0;
         int status;
         do {
-            resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, index_mimes, 25.0); // 2.5MB
+            // 2.5MB is the maximum size of page we will index. 10s timeout, max 5 redirects and 25s max transfer time.
+            resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, indexd_mimes, 25.0);
             status = std::stoi(resp->getHeader("gemini-status"));
         } while(status / 10 == 3 && redirection_count++ < 5);
 
         const auto& meta = resp->getHeader("meta");
-        auto [mime, mime_param] = parseMime(meta);
-        std::optional<std::string> charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
-        std::optional<std::string> lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
+        std::string mime;
+        std::optional<std::string> charset;
+        std::optional<std::string> lang;
         std::string title;
         std::string body;
-        std::vector<std::string> cross_site_links;
-        std::vector<std::string> internal_links;
+        std::vector<std::string> links;
         size_t body_size = resp->body().size();
-
         if(status/10 == 2) {
-            std::vector<std::string> links;
-            if(mime == "text/gemini") {
-                // Still convert UTF-8 to UTF-8 because iconv will ignore all errors and make postgre happy
-                std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
-                if(body_raw.size() < resp->body().size()/10) { // apprantly this is a binary file
-                    throw std::runtime_error("Seeming binary files sent as text");
-                }
+            // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
+            // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
+            std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
+            // The worst case is 25% from UTF-32 to UTF-8. Smaller than 20% is definatelly a binary file. We don't want to index it.
+            if(body_raw.size() < resp->body().size()/5)
+                throw std::runtime_error("Possible binary files sent as text");
 
+            auto [mime_str, mime_param] = parseMime(meta);
+            mime = std::move(mime_str);
+            charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
+            lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
+
+            if(mime == "text/gemini") {
                 tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(body_raw);
                 body = std::move(doc.text);
                 links = std::move(doc.links);
                 title = std::move(doc.title);
-                if(title.empty() && url.port() == 1965) {
-                    std::string tmp = url.str();
-                    title = tmp;
-                }
-                else if(title.empty() && url.port() != 1965)
+                if(title.empty())
                     title = url.str();
-
             }
             else if(mime == "text/plain" || mime == "plaintext" || mime == "text/markdown" || mime == "text/x-rst") {
-                body = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
-                if(body.size() < resp->body().size()/10) { // apprantly this is a binary file or totally broken
-                    throw std::runtime_error("Seeming binary files sent as text");
-                }
                 title = url.str();
+                body = std::move(body_raw);
             }
             else {
-                body.clear();
-                body_size = 0;
                 title = url.str();
-            }
-
-            // TODO: Avoid parsing links when the content doesn't change
-            for(const auto& link : links) {
-                if(tlgs::isNonUriAction(link))
-                    continue;
-
-                auto link_url = tlgs::Url(link);
-                if(link_url.good()) {
-                    if(link_url.protocol() != "gemini")
-                        continue;
-                }
-                else {
-                    link_url = linkCompose(url, link);
-                }
-                // We shall not send fragments
-                link_url.withFragment("");
-
-                // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
-                if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
-                    link_url.withParam("");
-
-                bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
-                if(is_cross_site)
-                    cross_site_links.push_back(link_url.str());
-                else
-                    internal_links.push_back(link_url.str());
+                body = "";
+                body_size = 0;
             }
         }
         else if(status/10 == 1) {
@@ -375,45 +343,76 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             throw std::runtime_error("Gemini status: " + std::to_string(status));
         }
 
+        // TODO: Avoid parsing links when the content doesn't change
+        std::vector<std::string> cross_site_links;
+        std::vector<std::string> internal_links;
+        for(const auto& link : links) {
+            if(tlgs::isNonUriAction(link))
+                continue;
+
+            auto link_url = tlgs::Url(link);
+            if(link_url.good()) {
+                if(link_url.protocol() != "gemini")
+                    continue;
+            }
+            else {
+                link_url = linkCompose(url, link);
+            }
+            // We shall not send fragments
+            link_url.withFragment("");
+
+            // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
+            if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
+                link_url.withParam("");
+
+            bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
+            if(is_cross_site)
+                cross_site_links.push_back(link_url.str());
+            else
+                internal_links.push_back(link_url.str());
+        }
+
         // TODO: Guess the language of the content. Then index them with different parsers
         // TODO: Only update the minimal parameters when we know the hash is the same
-        auto new_content_hash = drogon::utils::getMd5(body);
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
             "cross_site_links = $10::json, internal_links = $11::json WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title
             , nlohmann::json(cross_site_links).dump(), nlohmann::json(internal_links).dump());
+
         // No reason to update if hash is the same
-        if(content_hash != new_content_hash) {
-            co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
-                "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
-                "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
+        auto new_content_hash = drogon::utils::getMd5(body);
+        if(content_hash == new_content_hash)
+            co_return;
 
-            co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
-            for(const auto& link : internal_links) {
-                tlgs::Url link_url(link);
-                co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7);"
-                    , url.str(), url.host(), url.port(), link_url.str(), false, link_url.host(), link_url.port());
+        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
+            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
+            "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
 
-                if(co_await shouldCrawl(link_url.str()) == false)
-                    continue;
-                co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
-                    "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
-                    link_url.str(), link_url.host(), link_url.port());
-            }
-            for(const auto& link : cross_site_links) {
-                tlgs::Url link_url(link);
-                co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7);"
-                    , url.str(), url.host(), url.port(), link_url.str(), true, link_url.host(), link_url.port());
+        co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
+        for(const auto& link : internal_links) {
+            tlgs::Url link_url(link);
+            co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7);"
+                , url.str(), url.host(), url.port(), link_url.str(), false, link_url.host(), link_url.port());
 
-                if(co_await shouldCrawl(link_url.str()) == false)
-                    continue;
-                co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
-                    "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
-                    link_url.str(), link_url.host(), link_url.port());
-            }
+            if(co_await shouldCrawl(link_url.str()) == false)
+                continue;
+            co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
+                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
+                link_url.str(), link_url.host(), link_url.port());
+        }
+        for(const auto& link : cross_site_links) {
+            tlgs::Url link_url(link);
+            co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7);"
+                , url.str(), url.host(), url.port(), link_url.str(), true, link_url.host(), link_url.port());
+
+            if(co_await shouldCrawl(link_url.str()) == false)
+                continue;
+            co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
+                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
+                link_url.str(), link_url.host(), link_url.port());
         }
     }
     catch(std::exception& e) {

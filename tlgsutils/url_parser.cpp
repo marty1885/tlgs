@@ -89,6 +89,9 @@ Url::Url(const std::string& str, bool normalize_url)
 
 std::string Url::str() const
 {
+    if(!cache_.empty())
+        return cache_;
+
     std::string res = protocol_ + "://"+host_;
     if(port_ != 0 && default_port_ != port_)
         res += ":"+std::to_string(port_);
@@ -97,6 +100,7 @@ std::string Url::str() const
         res += "?"+param_;
     if(!fragment_.empty())
         res += "#"+fragment_;
+    cache_ = res;
     return res;
 }
 
@@ -112,12 +116,14 @@ std::string Url::hostWithPort(unsigned short default_port) const
 
 Url& Url::withHost(const std::string& new_host)
 {
+    cache_.clear();
     host_ = new_host;
     return *this;
 }
 
 Url& Url::withPath(const std::string& new_path, bool normalize_path)
 {
+    cache_.clear();
     if(new_path.empty() || new_path.front() != '/')
         path_ = "/" + new_path;
     else
@@ -130,42 +136,49 @@ Url& Url::withPath(const std::string& new_path, bool normalize_path)
 
 Url& Url::withParam(const std::string& new_param)
 {
+    cache_.clear();
     param_ = new_param;
     return *this;
 }
 
 Url& Url::withProtocol(const std::string& new_protocol)
 {
+    cache_.clear();
     protocol_ = new_protocol;
     return *this;
 }
 
 Url& Url::withPort(unsigned short new_port)
 {
+    cache_.clear();
     port_ = new_port;
     return *this;
 }
 
 Url& Url::withPort()
 {
+    cache_.clear();
     port_ = 0;
     return *this;
 }
 
 Url& Url::withDefaultPort(unsigned short n)
 {
+    cache_.clear();
     default_port_ = n;
     return *this;
 }
 
 Url& Url::withFragment(const std::string& new_fragment)
 {
+    cache_.clear();
     fragment_ = new_fragment;
     return *this;
 }
 
 Url& Url::normalize()
 {
+    cache_.clear();
     std::transform(protocol_.begin(), protocol_.end(), protocol_.begin(), ::tolower);
     path_ = std::filesystem::path(path_).lexically_normal().generic_string();
     return *this;

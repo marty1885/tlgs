@@ -54,6 +54,7 @@ protected:
     std::string fragment_;
     bool good_ = true;
     int default_port_;
+    mutable std::string cache_;
 };
 
 }
