@@ -140,8 +140,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         co_return false;
     // Do not crawl hosts known to be down
     // TODO: Put this on SQL
-    auto timeout = host_timeout_count_.find(url.hostWithPort(1965));
-    if(timeout != host_timeout_count_.end() && timeout->second > 3)
+    auto timeout = host_down_count_.find(url.hostWithPort(1965));
+    if(timeout != host_down_count_.end() && timeout->second > 3)
         co_return false;
 
     // TODO: Use a LRU cache
@@ -240,27 +240,43 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
 
 void GeminiCrawler::dispatchCrawl()
 {
+    // In case I forgot how this works in the future:
+    // Start new crawls up to max_concurrent_connections_. And launch new crawls when one finishes. This function is tricky
+    // and difficult to understand. It's a bit of a hack. But it is 100% lock free. The general idea is as follows:
+    // 1. A atomic counter is used to keep track of the number of active crawls.
+    // 2. We try to dispatch as many crawls as possible.
+    // 3. When a crawl finishes, we resubmit the crawl task.
+    //    * It is possible for crawls to finish at a close enough time. Causing a resubmit to dispatch multiple crawls.
+    //    * It doesn't matter. Since the other dispatches will just dispatch 0 crawls.
+    // 4. Near the end of crawling. It might be possible that there's not enough pages to be crawled
+    //    * But a crawler may suddenly submit more links for crawling.
+    //    * The nature to dispatch as much as possible helps here. Reactivating crawls if neded.
     while(!ended_) {
-        auto counter = std::make_shared<tlgs::Counter>(ongoing_crawlings_);
-        if(counter->count() < max_concurrent_connections_) {
-            loop_->queueInLoop(async_func([counter, this]() mutable -> Task<void> {
-                auto url_str = co_await getNextCrawlPage();
-                if(url_str.has_value()) {
-                    try {
-                        co_await crawlPage(url_str.value());
-                    }
-                    catch(std::exception& e) {
-                        LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
-                    }
-                    loop_->queueInLoop([this](){dispatchCrawl();});
-                }
-                else if(ongoing_crawlings_ == 1) {
-                    ended_ = true;
-                }
-            }));
-        }
-        else
+        auto counter = tlgs::Counter(ongoing_crawlings_);
+        if(counter.count() >= max_concurrent_connections_)
             break;
+
+        async_run([counter=std::move(counter), this]() mutable -> Task<void> {
+            auto url_str = co_await getNextCrawlPage();
+            // Crawling has ended if the following is true
+            // 1. There's no more URL to crawl
+            // 2. The current crawl is the last one in existance
+            //    * Since a crawler can add new items into the queue
+            if(url_str.has_value() == false && ongoing_crawlings_ == 1) {
+                ended_ = true;
+                co_return;
+            }
+
+            if(url_str.has_value()) {
+                try {
+                    co_await crawlPage(url_str.value());
+                }
+                catch(std::exception& e) {
+                    LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
+                }
+                loop_->queueInLoop([this](){dispatchCrawl();});
+            }
+        });
     }
 }
 
@@ -385,7 +401,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         if(content_hash == new_content_hash)
             co_return;
 
-        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || content_body), "
+        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ') || content_body), "
             "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
             "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
 
@@ -427,7 +443,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
             , url.str());
         
-        if(error == "Timeout")
-            host_timeout_count_[url.hostWithPort(1965)]++;
+        if(error == "Timeout" || error == "NetworkFailure")
+            host_down_count_[url.hostWithPort(1965)]++;
     }
 }
