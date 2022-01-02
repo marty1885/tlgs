@@ -50,7 +50,8 @@ bool tlgs::isAsciiArt(const std::string& str)
         return true;
 
     // patterns that's definatelly not normal text
-    if(str.find("(_-<") != std::string::npos)
+    if(str.find("(_-<") != std::string::npos ||
+        str.find("_ _ _ _") != std::string::npos)
         return true;
 
     return false;
