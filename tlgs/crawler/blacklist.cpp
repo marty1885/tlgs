@@ -114,7 +114,7 @@ bool inBlacklist(const std::string& url_str)
         // mozz mailing list linkscraper 
         "gemini://mozz.us/files/gemini-links.gmi",
         "gemini://gem.benscraft.info/mailing-list",
-        " gemini://rawtext.club/~sloum/geminilist",
+        "gemini://rawtext.club/~sloum/geminilist",
         // gemini.techrights.org
         "gemini://gemini.techrights.org/",
 
@@ -255,6 +255,7 @@ bool inBlacklist(const std::string& url_str)
         if(std::regex_match(commit, sm, re))
             return true;
     }
+
     if(url.str().starts_with("/git/"))
         return true;
 
