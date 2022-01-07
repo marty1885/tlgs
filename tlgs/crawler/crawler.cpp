@@ -252,11 +252,11 @@ void GeminiCrawler::dispatchCrawl()
     //    * But a crawler may suddenly submit more links for crawling.
     //    * The nature to dispatch as much as possible helps here. Reactivating crawls if neded.
     while(!ended_) {
-        auto counter = tlgs::Counter(ongoing_crawlings_);
-        if(counter.count() >= max_concurrent_connections_)
+        auto counter = std::make_shared<tlgs::Counter>(ongoing_crawlings_);
+        if(counter->count() >= max_concurrent_connections_)
             break;
 
-        async_run([counter=std::move(counter), this]() mutable -> Task<void> {
+        async_run([counter, this]() mutable -> Task<void> {
             auto url_str = co_await getNextCrawlPage();
             // Crawling has ended if the following is true
             // 1. There's no more URL to crawl
@@ -288,9 +288,11 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     std::string error;
     bool failed = false;
     try {
-        auto record = co_await db->execSqlCoro("SELECT url, content_body FROM pages WHERE url = $1;", url.str());
+        auto record = co_await db->execSqlCoro("SELECT url, content_body, indexed_content_hash , raw_content_hash "
+            "FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
-        auto content_hash = have_record ? drogon::utils::getMd5(record[0]["content_body"].as<std::string>()) : ""; // TODO: Use blake2b
+        auto indexed_content_hash = have_record ? record[0]["indexed_content_hash"].as<std::string>() : "";
+        auto raw_content_hash = have_record ? record[0]["raw_content_hash"].as<std::string>() : "";
 
         if(!have_record) {
             co_await db->execSqlCoro("INSERT INTO pages(url, domain_name, port, first_seen_at)"
@@ -317,6 +319,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         std::string body;
         std::vector<std::string> links;
         size_t body_size = resp->body().size();
+        auto new_raw_content_hash = tlgs::xxHash64(resp->body());
         if(status/10 == 2) {
             // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
             // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
@@ -388,18 +391,22 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 internal_links.push_back(link_url.str());
         }
 
+        auto new_indexed_content_hash = tlgs::xxHash64(body);
+        // No reason to update if hash is the same
+        if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
+            // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
+                "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
+                url.str(), status, meta, mime);
+                co_return;
+        }
+
         // TODO: Guess the language of the content. Then index them with different parsers
-        // TODO: Only update the minimal parameters when we know the hash is the same
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
-            "cross_site_links = $10::json, internal_links = $11::json WHERE url = $1;",
-            url.str(), body, body_size, charset, lang, status, meta, mime, title
-            , nlohmann::json(cross_site_links).dump(), nlohmann::json(internal_links).dump());
-
-        // No reason to update if hash is the same
-        auto new_content_hash = drogon::utils::getMd5(body);
-        if(content_hash == new_content_hash)
-            co_return;
+            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13 WHERE url = $1;",
+            url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash);
 
         co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ') || content_body), "
             "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "

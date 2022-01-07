@@ -31,6 +31,8 @@ Task<> createDb()
 			internal_links json,
 			title_vector tsvector,
 			last_queued_at timestamp without time zone,
+			indexed_content_hash text NOT NULL default '',
+			raw_content_hash text NOT NULL default '',
 			PRIMARY KEY (url)
 		);
 	)");

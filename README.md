@@ -24,6 +24,7 @@ As of now, indexing of news sites, RFCs, documentations are mostly disabled. But
 * [CLI11](https://github.com/CLIUtils/CLI11)
 * [libfmt](https://github.com/fmtlib/fmt)
 * [TBB](https://github.com/oneapi-src/oneTBB)
+* [xxHash](https://github.com/Cyan4973/xxHash)
 * iconv
 * PostgreSQL
 

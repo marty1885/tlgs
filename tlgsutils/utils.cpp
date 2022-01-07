@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <iostream>
 #include <cassert>
+#include <xxhash.h>
+#include <drogon/utils/Utilities.h>
 
 static std::string charToHex(char c)
 {
@@ -109,4 +111,10 @@ bool tlgs::isNonUriAction(const std::string& str)
     if(std::regex_match(str, sm, re))
         return true;
     return false;
+}
+
+std::string tlgs::xxHash64(const std::string_view str)
+{
+    auto hash = XXH64(str.data(), str.size(), 0);
+    return drogon::utils::binaryStringToHex((unsigned char*)&hash, sizeof(hash));
 }

@@ -11,6 +11,7 @@ set(DREMINI_BUILD_TEST OFF)
 add_subdirectory(thrid_party/dremini)
 include_directories(thrid_party/dremini)
 
+find_package(Drogon REQUIRED)
 include_directories(.)
 add_subdirectory(tlgsutils)
 add_subdirectory(tlgs)
