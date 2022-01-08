@@ -353,7 +353,16 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
             , [](const auto& node, bool){ return node.is_root; }));
     }
 
+    // Deduplicate the search results using URL and hash. Currently it merges the results if the hash is the same
+    // and one of the following is true:
+    // 1. The two pages lives on the same host
+    // 2. The two pages have the same path
+    // 3. We can replace /~ with /users or /user and resulting URL is the same
+    //
+    // It works by storing using the hash as the key and looks up other nodes with the same hash. Then decide if 
+    // we should merge or not.
     std::unordered_multimap<uint64_t,const HitsNode*> result_map;
+    result_map.reserve(nodes.size());
     std::string buf('\0', 8);
     drogon::utils::secureRandomBytes(buf.data(), buf.size());
     std::string token = "/"+drogon::utils::binaryStringToHex((unsigned char*)buf.data(), buf.size());

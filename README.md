@@ -86,7 +86,7 @@ sudo systemctl start tlgs_crawler
 - [ ] Link analysis using SALSA
 - [ ] BM25 for text scoring
 - [ ] Support Atom feeds
-- [ ] Dedeuplicate search result
+- [x] Dedeuplicate search result
 - [x] Impement Filters
 - [ ] Remove VT control code embedded in pages
 - [ ] Proper(?) way to migrate schema
