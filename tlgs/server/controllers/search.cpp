@@ -9,6 +9,8 @@
 #include <ranges>
 #include <atomic>
 #include <regex>
+#include <span>
+#include <ranges>
 #include <fmt/core.h>
 
 #include "search_result.hpp"
@@ -20,6 +22,7 @@ struct RankedResult
     std::string url;
     std::string content_type;
     size_t size;
+    uint64_t content_hash;
     float score;
 };
 
@@ -63,6 +66,7 @@ struct HitsNode
     std::string url;
     std::string content_type;
     size_t size = 0;
+    uint64_t content_hash;
     float auth_score = 1;
     float new_auth_score = 1;
     float hub_score = 1;
@@ -199,11 +203,13 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
 {
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "
-        "ts_rank_cd(pages.title_vector, plainto_tsquery($1))*50+ts_rank_cd(pages.search_vector, plainto_tsquery($1)) AS rank "
+        "indexed_content_hash AS content_hash, ts_rank_cd(pages.title_vector, "
+        "plainto_tsquery($1))*50+ts_rank_cd(pages.search_vector, plainto_tsquery($1)) AS rank "
         "FROM pages WHERE pages.search_vector @@ plainto_tsquery($1) "
         "ORDER BY rank DESC LIMIT 50000;", query_str);
     auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
-        "0 AS rank FROM pages JOIN links ON pages.url=links.to_url WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
+        "indexed_content_hash AS content_hash, 0 AS rank FROM pages JOIN links ON pages.url=links.to_url "
+        "WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
         , query_str);
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
@@ -226,6 +232,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
                 node.text_rank = link["rank"].as<double>();
                 node.size = link["size"].as<int64_t>();
                 node.content_type = link["content_type"].as<std::string>();
+                node.content_hash = std::stoull(link["content_hash"].as<std::string>(), nullptr, 16);
                 node.is_root = node.text_rank != 0; // Since the only reason for rank == 0 is it's in the base but not root
                 nodes.emplace_back(std::move(node));
                 node_table[source_url] = nodes.size()-1;
@@ -346,16 +353,70 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
             , [](const auto& node, bool){ return node.is_root; }));
     }
 
+    std::unordered_multimap<uint64_t,const HitsNode*> result_map;
+    std::string buf('\0', 8);
+    drogon::utils::secureRandomBytes(buf.data(), buf.size());
+    std::string token = "/"+drogon::utils::binaryStringToHex((unsigned char*)buf.data(), buf.size());
+    for(const auto& node : nodes) {
+        if(node.is_root == false && find_auths == true)
+            continue;
+        auto [begin, end] = result_map.equal_range(node.content_hash);
+        if(begin == end) {
+            result_map.emplace(node.content_hash, &node);
+            continue;
+        }
+
+        tlgs::Url node_url(node.url);
+        std::string str = node.url;
+        drogon::utils::replaceAll(str, "/~", token);
+        drogon::utils::replaceAll(str, "/users", token);
+        drogon::utils::replaceAll(str, "/user", token);
+        bool replaced = false;
+        for(auto& [_, stored] : std::ranges::subrange(begin, end)) {
+            tlgs::Url stored_url(stored->url);
+            std::string str2 = stored->url;
+            drogon::utils::replaceAll(str2, "/~", token);
+            drogon::utils::replaceAll(str2, "/users", token);
+            drogon::utils::replaceAll(str2, "/user", token);
+
+            if(node_url.host() == stored_url.host() ||
+                node_url.path() == stored_url.path() ||
+                stored->url.ends_with(node_url.host()+node_url.path()) ||
+                str == str2) {
+                if(stored->score < node.score)
+                    stored = &node;
+                replaced = true;
+                break;
+            }
+
+            // Anti-spam/takeover protection. There are some archives on Geminispace. Commonly with the
+            // URL gemini://example.com/<hostname>/<path....>/<filename> This prevents replacing the real
+            // capsure link with the mirror/archive
+            if(node.url.ends_with(stored_url.host()+stored_url.path())) {
+                replaced = true;
+                break;
+            }
+        }
+        
+        if(replaced == false)
+            result_map.emplace(node.content_hash, &node);
+    }
+    LOG_DEBUG << "Deduplication removed " << nodes.size() - result_map.size() << " results";
+
     std::vector<RankedResult> search_result;
-    search_result.reserve(nodes.size());
-    for(const auto& item : nodes) {
+    search_result.reserve(result_map.size());
+    for(const auto& [_, item] : result_map) {
         RankedResult result;
-        result.url = item.url;
-        result.score = item.score;
-        result.size = item.size;
-        result.content_type = item.content_type;
+        result.url = item->url;
+        result.score = item->score;
+        result.size = item->size;
+        result.content_type = item->content_type;
+        result.content_hash = item->content_hash;
         search_result.emplace_back(std::move(result));
     }
+    std::sort(search_result.begin(), search_result.end(), [](const auto& a, const auto& b) {
+        return a.score > b.score;
+    });
     co_return search_result;
 }
 
