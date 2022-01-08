@@ -288,7 +288,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     std::string error;
     bool failed = false;
     try {
-        auto record = co_await db->execSqlCoro("SELECT url, content_body, indexed_content_hash , raw_content_hash "
+        auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash , raw_content_hash "
             "FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
         auto indexed_content_hash = have_record ? record[0]["indexed_content_hash"].as<std::string>() : "";
@@ -332,6 +332,14 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             mime = std::move(mime_str);
             charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
             lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
+
+            // No reason to reindex if the content hasn't changed. `force_reindex_` is used to force reindexing of files
+            if(force_reindex_ == false && raw_content_hash == new_raw_content_hash) {
+                co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
+                    "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
+                    url.str(), status, meta, mime);
+                    co_return;
+            }
 
             if(mime == "text/gemini") {
                 tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(body_raw);
@@ -392,7 +400,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         }
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
-        // No reason to update if hash is the same
+        // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
         if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
             // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "

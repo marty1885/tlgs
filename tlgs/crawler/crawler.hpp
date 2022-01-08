@@ -61,6 +61,11 @@ public:
     {
         return max_concurrent_connections_;
     }
+
+    void enableForceReindex(bool enable=true)
+    {
+        force_reindex_ = enable;
+    }
 protected:
     /**
      * @brief Launches up to max_concurrent_connections_ concurrent crawler tasks (not threads)
@@ -99,4 +104,5 @@ protected:
     size_t max_concurrent_connections_ = 1;
     std::atomic<size_t> ongoing_crawlings_ = 0;
     std::atomic<bool> ended_ = false;
+    bool force_reindex_ = false;
 };

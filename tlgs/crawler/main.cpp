@@ -20,9 +20,11 @@ int main(int argc, char** argv)
 
     std::string seed_link_file;
     size_t concurrent_connections = 1;
+    bool force_reindex = false;
     std::string config_file = "/etc/tlgs/config.json";
     cli.add_option("-s,--seed", seed_link_file, "Path to seed links for initalizing crawling");
     cli.add_option("-c", concurrent_connections, "Number of concurrent connections");
+    cli.add_option("--force-reindex", force_reindex, "Force re-indexing of all links");
     cli.add_option("config_file", config_file, "Path to TLGS config file");
 
     CLI11_PARSE(cli, argc, argv);
@@ -33,6 +35,7 @@ int main(int argc, char** argv)
     app().getLoop()->queueInLoop([&]() -> void {
         crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
         crawler->setMaxConcurrentConnections(concurrent_connections);
+        crawler->enableForceReindex(force_reindex);
         if(!seed_link_file.empty()) {
             std::ifstream in(seed_link_file);
             if(in.is_open() == false) {
