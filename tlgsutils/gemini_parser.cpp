@@ -12,8 +12,8 @@ GeminiDocument extractGemini(const std::string_view sv)
 {
     GeminiDocument doc;
     auto nodes = dremini::parseGemini(sv);
-    for(const auto& node : nodes)
-    {
+    doc.text.reserve(sv.size());
+    for(const auto& node : nodes) {
         doc.text += node.text + "\n";
         if(node.type == "link")
             doc.links.push_back(node.meta);

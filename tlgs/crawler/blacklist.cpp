@@ -237,7 +237,7 @@ bool inBlacklist(const std::string& url_str)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
-    // seems to be a sign of common golpher proxy
+    // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
         return true;
     // links should not contain ASCII control characters
