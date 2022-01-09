@@ -275,6 +275,7 @@ void GeminiCrawler::dispatchCrawl()
                 catch(std::exception& e) {
                     LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
                 }
+                counter = nullptr;
                 loop_->queueInLoop([this](){dispatchCrawl();});
             }
         });
