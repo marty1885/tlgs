@@ -285,7 +285,7 @@ void GeminiCrawler::dispatchCrawl()
 Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 {
     auto db = app().getDbClient();
-    auto url = tlgs::Url(url_str);
+    const auto url = tlgs::Url(url_str);
     LOG_TRACE << "Crawling: " << url_str;
     if(url.str() != url_str) {
         LOG_WARN << "Warning: URL " << url_str << " is not normalized";
@@ -310,18 +310,19 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         HttpResponsePtr resp;
         int redirection_count = 0;
         int status;
+        auto crawl_url = url;
         do {
             // 2.5MB is the maximum size of page we will index. 10s timeout, max 5 redirects and 25s max transfer time.
-            resp = co_await dremini::sendRequestCoro(url.str(), 10, loop_, 0x2625a0, indexd_mimes, 25.0);
+            resp = co_await dremini::sendRequestCoro(crawl_url.str(), 10, loop_, 0x2625a0, indexd_mimes, 25.0);
 
             status = std::stoi(resp->getHeader("gemini-status"));
             if(status / 10 == 3) {
                 auto redirect_url = tlgs::Url(resp->getHeader("meta"));
-                if(url.str() == redirect_url.str())
+                if(crawl_url.str() == redirect_url.str())
                     throw std::runtime_error("Bad redirect");
                 if(co_await shouldCrawl(redirect_url.str()) == false)
                     throw std::runtime_error("Redirected to blocked URL");
-                url = std::move(redirect_url);
+                crawl_url = std::move(redirect_url);
             }
         } while(status / 10 == 3 && redirection_count++ < 5);
 

@@ -3,6 +3,7 @@ add_executable(tlgs_server
   controllers/search.cpp
   controllers/tools.cpp
   controllers/api.cpp)
+  target_compile_features(tlgs_server PRIVATE cxx_std_20)
 find_package(fmt REQUIRED)
 target_link_libraries(tlgs_server PRIVATE Drogon::Drogon dremini tlgsutils fmt::fmt)
 target_include_directories(tlgs_server PRIVATE .)
