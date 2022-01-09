@@ -45,7 +45,7 @@ public:
     METHOD_LIST_END
 
 
-    Task<std::vector<RankedResult>> hitsSearch(const std::string& query_str, bool find_auths = true);
+    Task<std::vector<RankedResult>> hitsSearch(const std::string& query_str);
     std::atomic<size_t> search_in_flight{0};
 };
 
@@ -58,23 +58,6 @@ auto sanitizeGemini(std::string preview) -> std::string {
         return preview;
     return preview.substr(idx);
 }
-
-struct HitsNode
-{
-    std::vector<HitsNode*> out_neighbous;
-    std::vector<HitsNode*> in_neighbous;
-    std::string url;
-    std::string content_type;
-    size_t size = 0;
-    uint64_t content_hash;
-    float auth_score = 1;
-    float new_auth_score = 1;
-    float hub_score = 1;
-    float new_hub_score = 1;
-    float text_rank = 0;
-    float score = 0;
-    bool is_root = false;
-};
 
 enum class TokenType
 {
@@ -199,7 +182,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
     return {search_query, filter};
 }
 // Search with scoring using the HITS algorithm
-Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& query_str, bool find_auths)
+Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& query_str)
 {
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "
@@ -217,9 +200,13 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     }
 
     std::unordered_map<std::string, size_t> node_table;
-    std::vector<HitsNode> nodes;
+    std::vector<RankedResult> nodes;
+    std::vector<double> text_rank;
+    std::vector<unsigned char> is_root;
     nodes.reserve(nodes_of_intrest.size());
+    is_root.reserve(nodes_of_intrest.size());
     node_table.reserve(nodes_of_intrest.size());
+    text_rank.reserve(nodes_of_intrest.size());
     // Add all nodes to our graph
     // TODO: Graph construction seems to be the slow part then a common term is being search. "Gemini", "capsule" are good examples.
     // Optimize it
@@ -230,13 +217,14 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
                 std::string content_hash = link["content_hash"].as<std::string>();
                 if(content_hash.empty())
                     content_hash = "0";
-                HitsNode node;
+                RankedResult node;
+                double rank = link["rank"].as<double>();
                 node.url = source_url;
-                node.text_rank = link["rank"].as<double>();
                 node.size = link["size"].as<int64_t>();
                 node.content_type = link["content_type"].as<std::string>();
                 node.content_hash = std::stoull(content_hash, nullptr, 16);
-                node.is_root = node.text_rank != 0; // Since the only reason for rank == 0 is it's in the base but not root
+                text_rank.emplace_back(rank);
+                is_root.push_back(bool(rank != 0)); // Since the only reason for rank == 0 is it's in the base but not root
                 nodes.emplace_back(std::move(node));
                 node_table[source_url] = nodes.size()-1;
             }
@@ -247,12 +235,17 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     LOG_DEBUG << "Root set: " << nodes_of_intrest.size() << " pages";
     LOG_DEBUG << "Base set: " << nodes.size() - nodes_of_intrest.size() << " pages";
 
+    std::vector<std::vector<size_t>> out_neighbous;
+    std::vector<std::vector<size_t>> in_neighbous;
+    out_neighbous.resize(nodes.size());
+    in_neighbous.resize(nodes.size());
+
     // populate links between nodes
-    auto getIfExists= [&](const std::string& name) -> HitsNode* {
+    auto getIfExists = [&](const std::string& name) -> size_t {
         auto it = node_table.find(name);
         if(it == node_table.end())
-            return nullptr;
-        return &nodes[it->second];
+            return -1;
+        return it->second;
     };
     for(const auto& page : nodes_of_intrest) {
         auto source_url = page["source_url"].as<std::string>();
@@ -260,100 +253,92 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
             continue;
         auto links_str = page["cross_site_links"].as<std::string>();
         auto links = nlohmann::json::parse(std::move(links_str)).get<std::vector<std::string>>();
-        auto source_node = getIfExists(source_url);
-        if(source_node == nullptr) // Should not ever happen
+        auto source_node_idx = getIfExists(source_url);
+        if(source_node_idx == -1) // Should not ever happen
             continue;
-        source_node->out_neighbous.reserve(links.size());
+        out_neighbous[source_node_idx].reserve(links.size());
         for(const auto& link : links) {
             const auto& dest_url = link;
-            auto dest_node = getIfExists(dest_url);
+            auto dest_node_idx = getIfExists(dest_url);
 
-            if(dest_node == nullptr || source_url == dest_url)
+            if(dest_node_idx == -1 || source_url == dest_url)
                 continue;
-            source_node->out_neighbous.push_back(dest_node);
-            dest_node->in_neighbous.push_back(source_node);
+            out_neighbous[source_node_idx].push_back(dest_node_idx);
+            in_neighbous[dest_node_idx].push_back(source_node_idx);
         }
     }
     for(const auto& link : links_to_node) {
         const auto& source_url = link["source_url"].as<std::string>();
         const auto& dest_url = link["dest_url"].as<std::string>();
-        auto source_node = getIfExists(source_url);
-        auto dest_node = getIfExists(dest_url);
+        auto source_node_idx = getIfExists(source_url);
+        auto dest_node_idx = getIfExists(dest_url);
 
         if(source_url == dest_url)
             continue;
-        if(dest_node == nullptr || source_node == nullptr)
+        if(dest_node_idx == -1 || source_node_idx == -1)
             continue;
-        source_node->out_neighbous.push_back(dest_node);
-        dest_node->in_neighbous.push_back(source_node);
+        out_neighbous[source_node_idx].push_back(dest_node_idx);
+        in_neighbous[dest_node_idx].push_back(source_node_idx);
     }
 
     // The HITS algorithm
     float score_delta = std::numeric_limits<float>::max_digits10;
     constexpr float epsilon = 0.005;
     constexpr size_t max_iter = 300;
+    std::vector<double> auth_score;
+    std::vector<double> hub_score;
+    std::vector<double> new_auth_score;
+    std::vector<double> new_hub_score;
+    auth_score.resize(nodes.size(), 1.0/nodes.size());
+    hub_score.resize(nodes.size(), 1.0/nodes.size());
+    new_auth_score.resize(nodes.size());
+    new_hub_score.resize(nodes.size());
     size_t hits_iter = 0;
     for(hits_iter=0;hits_iter<max_iter && score_delta > epsilon;hits_iter++) {
-        for(auto& node : nodes) {
-            node.new_auth_score = node.auth_score;
-            node.new_hub_score = node.hub_score;
-            float new_auth_score = 0; 
-            float new_hub_score = 0;
-            for(auto neighbour : node.in_neighbous)
-                new_auth_score += neighbour->hub_score;
-            for(auto neighbour : node.out_neighbous)
-                new_hub_score += neighbour->auth_score;
+        for(size_t i=0;i<nodes.size();i++) {
+            new_auth_score[i] = auth_score[i];
+            new_hub_score[i] = hub_score[i];
+            float calc_auth_score = 0; 
+            float calc_hub_score = 0;
+            for(auto neighbour_idx : in_neighbous[i])
+                calc_auth_score += hub_score[neighbour_idx];
+            for(auto neighbour_idx : out_neighbous[i])
+                calc_hub_score += auth_score[neighbour_idx];
 
-            if(new_auth_score != 0)
-                node.new_auth_score = new_auth_score;
-            if(new_hub_score != 0)
-                node.new_hub_score = new_hub_score;
+            if(calc_auth_score != 0)
+                new_auth_score[i] = calc_auth_score;
+            if(calc_hub_score != 0)
+                new_hub_score[i] = calc_hub_score;
         }
 
-        float auth_sum = std::max(std::accumulate(nodes.begin(), nodes.end(), 0.f
-            ,[](float v, const auto& node) { return node.new_auth_score + v;}), 1.f);
-        float hub_sum = std::max(std::accumulate(nodes.begin(), nodes.end(), 0.f
-            , [](float v, const auto& node) { return node.new_hub_score + v;}), 1.f);
+        float auth_sum = std::max(std::accumulate(new_auth_score.begin(), new_auth_score.end(), 0.0), 1.0);
+        float hub_sum = std::max(std::accumulate(new_hub_score.begin(), new_hub_score.end(), 0.0), 1.0);
 
         score_delta = 0;
-        for(auto& node : nodes) {
-            score_delta += std::abs(node.auth_score - node.new_auth_score / auth_sum);
-            score_delta += std::abs(node.hub_score - node.new_hub_score / hub_sum);
-            node.auth_score = node.new_auth_score / auth_sum;
-            node.hub_score = node.new_hub_score / hub_sum;
+        for(size_t i=0;i<nodes.size();i++) {
+            score_delta += std::abs(auth_score[i] - new_auth_score[i] / auth_sum);
+            score_delta += std::abs(hub_score[i] - new_hub_score[i] / hub_sum);
+            auth_score[i] = new_auth_score[i] / auth_sum;
+            hub_score[i] = new_hub_score[i] / hub_sum;
 
             // avoid denormals
-            if(node.auth_score < std::numeric_limits<float>::epsilon())
-                node.auth_score = 0;
-            if(node.hub_score < std::numeric_limits<float>::epsilon())
-                node.hub_score = 0;
+            if(auth_score[i] < std::numeric_limits<float>::epsilon())
+                auth_score[i] = 0;
+            if(hub_score[i] < std::numeric_limits<float>::epsilon())
+                hub_score[i] = 0;
         }
     }
     LOG_DEBUG << "HITS finished in " << hits_iter << " iterations";
 
-    float max_auth_score = std::max_element(nodes.begin(), nodes.end()
-        , [](const auto& a, const auto& b) { return a.auth_score < b.auth_score; })->auth_score;
+    float max_auth_score = *std::max_element(auth_score.begin(), auth_score.end());
     if(max_auth_score == 0)
         max_auth_score = 1;
     // Combine the text score and the HITS score. Really want to use BM25 as text score
     // XXX: This scoring function works. But it kinda sucks
-    for(auto& node : nodes) {
-        if(find_auths) {
-            float boost = exp((node.auth_score / max_auth_score)*6.5);
-            node.score = 2*(boost * node.text_rank) / (boost + node.text_rank);
-        }
-        else
-            node.score = node.hub_score;
-    }
-
-    std::sort(nodes.begin(), nodes.end(), [](const auto& a, const auto& b) {
-        if(a.is_root != b.is_root)
-            return a.is_root;
-        return a.score > b.score;
-    });
-    if(find_auths) {
-        nodes = std::vector<HitsNode>(nodes.begin(), std::lower_bound(nodes.begin(), nodes.end(), true
-            , [](const auto& node, bool){ return node.is_root; }));
+    for(size_t i=0;i<nodes.size();i++) {
+        auto& node = nodes[i];
+        float boost = exp((auth_score[i] / max_auth_score)*6.5);
+        node.score = 2*(boost * text_rank[i]) / (boost + text_rank[i]);
     }
 
     // Deduplicate the search results using URL and hash. Currently it merges the results if the hash is the same
@@ -364,13 +349,14 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     //
     // It works by storing using the hash as the key and looks up other nodes with the same hash. Then decide if 
     // we should merge or not.
-    std::unordered_multimap<uint64_t,const HitsNode*> result_map;
+    std::unordered_multimap<uint64_t,const RankedResult*> result_map;
     result_map.reserve(nodes.size());
-    std::string buf('\0', 8);
+    std::string buf(8, '\0');
     drogon::utils::secureRandomBytes(buf.data(), buf.size());
     std::string token = "/"+drogon::utils::binaryStringToHex((unsigned char*)buf.data(), buf.size());
-    for(const auto& node : nodes) {
-        if(node.is_root == false && find_auths == true)
+    for(size_t i=0;i<nodes.size();i++) {
+        auto& node = nodes[i];
+        if(is_root[i] == false)
             continue;
         auto [begin, end] = result_map.equal_range(node.content_hash);
         if(begin == end) {
@@ -418,13 +404,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
     for(const auto& [_, item] : result_map) {
-        RankedResult result;
-        result.url = item->url;
-        result.score = item->score;
-        result.size = item->size;
-        result.content_type = item->content_type;
-        result.content_hash = item->content_hash;
-        search_result.emplace_back(std::move(result));
+        search_result.push_back(*item);
     }
     std::sort(search_result.begin(), search_result.end(), [](const auto& a, const auto& b) {
         return a.score > b.score;
@@ -504,7 +484,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     auto db = app().getDbClient();
     if(result_cache.findAndFetch(query_str, ranked_result) == false) {
         std::vector<RankedResult> result;
-        result = co_await hitsSearch(query_str, true);
+        result = co_await hitsSearch(query_str);
         ranked_result = std::make_shared<HitsResult>(std::move(result));
         result_cache.insert(query_str, ranked_result, 600);
         cached = false;
