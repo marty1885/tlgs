@@ -88,7 +88,9 @@ int main(int argc, char** argv)
 {
 	std::string config_file = "/etc/tlgs/config.json";
 	CLI::App cli{"TLGS Utiltity"};
+	
 	CLI::App& populate_schema = *cli.add_subcommand("populate_schema", "Populate/update database schema");
+
 	CLI::App& purge = *cli.add_subcommand("purge", "Remove page from database");
 	std::string url;
 	purge.add_option("purge_url", url, "URL to purge");
