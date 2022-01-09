@@ -287,6 +287,9 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     auto db = app().getDbClient();
     auto url = tlgs::Url(url_str);
     LOG_TRACE << "Crawling: " << url_str;
+    if(url.str() != url_str) {
+        LOG_WARN << "Warning: URL " << url_str << " is not normalized";
+    }
     std::string error;
     bool failed = false;
     try {
