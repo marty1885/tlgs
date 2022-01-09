@@ -375,8 +375,12 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             mime = "<gemini-request-info>";
         }
         else {
-            // Nothing. We don't process them.
-            throw std::runtime_error("Gemini status: " + std::to_string(status));
+            LOG_ERROR << "Failed to fetch " << url.str() << ": " << status;
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
+                , url.str(), status, meta);
+            co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
+                , url.str());
+            co_return;
         }
 
         // TODO: Avoid parsing links when the content doesn't change
