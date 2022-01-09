@@ -227,12 +227,15 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         for(const auto& link : links) {
             auto source_url = link["source_url"].as<std::string>();
             if(node_table.count(source_url) == 0) {
+                std::string content_hash = link["content_hash"].as<std::string>();
+                if(content_hash.empty())
+                    content_hash = "0";
                 HitsNode node;
                 node.url = source_url;
                 node.text_rank = link["rank"].as<double>();
                 node.size = link["size"].as<int64_t>();
                 node.content_type = link["content_type"].as<std::string>();
-                node.content_hash = std::stoull(link["content_hash"].as<std::string>(), nullptr, 16);
+                node.content_hash = std::stoull(content_hash, nullptr, 16);
                 node.is_root = node.text_rank != 0; // Since the only reason for rank == 0 is it's in the base but not root
                 nodes.emplace_back(std::move(node));
                 node_table[source_url] = nodes.size()-1;
