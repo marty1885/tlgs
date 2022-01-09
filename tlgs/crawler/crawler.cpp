@@ -270,6 +270,7 @@ void GeminiCrawler::dispatchCrawl()
             if(url_str.has_value()) {
                 try {
                     co_await crawlPage(url_str.value());
+                    LOG_INFO << "Crawled " << url_str.value();
                 }
                 catch(std::exception& e) {
                     LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
@@ -284,7 +285,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 {
     auto db = app().getDbClient();
     auto url = tlgs::Url(url_str);
-    LOG_INFO << "Crawling: " << url_str;
+    LOG_TRACE << "Crawling: " << url_str;
     std::string error;
     bool failed = false;
     try {
