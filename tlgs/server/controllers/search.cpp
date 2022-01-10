@@ -270,11 +270,11 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     for(const auto& link : links_to_node) {
         const auto& source_url = link["source_url"].as<std::string>();
         const auto& dest_url = link["dest_url"].as<std::string>();
-        auto source_node_idx = getIfExists(source_url);
-        auto dest_node_idx = getIfExists(dest_url);
-
         if(source_url == dest_url)
             continue;
+
+        auto source_node_idx = getIfExists(source_url);
+        auto dest_node_idx = getIfExists(dest_url);
         if(dest_node_idx == -1 || source_node_idx == -1)
             continue;
         out_neighbous[source_node_idx].push_back(dest_node_idx);
@@ -359,7 +359,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         if(is_root[i] == false)
             continue;
         auto [begin, end] = result_map.equal_range(node.content_hash);
-        if(begin == end) {
+        if(node.size == 0 || begin == end) {
             result_map.emplace(node.content_hash, &node);
             continue;
         }
