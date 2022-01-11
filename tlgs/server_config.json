@@ -56,6 +56,11 @@
             "number_of_connections": 4,
             "timeout": 10
         }
-     ]
+     ],
+	 "custom_config": {
+		 "tlgs": {
+			 "ranking_algo": "hits"
+		 }
+	 }
 }
     

@@ -29,6 +29,13 @@ struct RankedResult
 struct SearchController : public HttpController<SearchController>
 {
 public:
+    enum class RankingAlgorithm
+    {
+        HITS,
+        SALSA
+    };
+
+    SearchController();
     Task<HttpResponsePtr> tlgs_search(HttpRequestPtr req);
     Task<HttpResponsePtr> add_seed(HttpRequestPtr req);
     Task<HttpResponsePtr> jump_search(HttpRequestPtr req, std::string search_term);
@@ -47,6 +54,7 @@ public:
 
     Task<std::vector<RankedResult>> hitsSearch(const std::string& query_str);
     std::atomic<size_t> search_in_flight{0};
+    RankingAlgorithm ranking_algorithm = RankingAlgorithm::HITS;
 };
 
 auto sanitizeGemini(std::string preview) -> std::string {
@@ -181,6 +189,176 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
         search_query.resize(search_query.size()-1);
     return {search_query, filter};
 }
+
+/**
+ * @brief Rnaks the network nodes using the HITS algorithm.
+ * 
+ * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i 
+ * @param out_neighbous ector of vector where out_neighbous[i] is all outbound links of node i
+ * @return std::vector<double> The score of each node
+ */
+std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbous, const std::vector<std::vector<size_t>>& out_neighbous)
+{
+    // The HITS algorithm
+    size_t node_count = in_neighbous.size();
+    assert(node_count == out_neighbous.size());
+    float score_delta = std::numeric_limits<float>::max_digits10;
+    constexpr float epsilon = 0.005;
+    constexpr size_t max_iter = 300;
+    std::vector<double> auth_score;
+    std::vector<double> hub_score;
+    std::vector<double> new_auth_score;
+    std::vector<double> new_hub_score;
+    auth_score.resize(node_count, 1.0/node_count);
+    hub_score.resize(node_count, 1.0/node_count);
+    new_auth_score.resize(node_count);
+    new_hub_score.resize(node_count);
+    size_t hits_iter = 0;
+    for(hits_iter=0;hits_iter<max_iter && score_delta > epsilon;hits_iter++) {
+        for(size_t i=0;i<node_count;i++) {
+            new_auth_score[i] = auth_score[i];
+            new_hub_score[i] = hub_score[i];
+            float calc_auth_score = 0; 
+            float calc_hub_score = 0;
+            for(auto neighbour_idx : in_neighbous[i])
+                calc_auth_score += hub_score[neighbour_idx];
+            for(auto neighbour_idx : out_neighbous[i])
+                calc_hub_score += auth_score[neighbour_idx];
+
+            if(calc_auth_score != 0)
+                new_auth_score[i] = calc_auth_score;
+            if(calc_hub_score != 0)
+                new_hub_score[i] = calc_hub_score;
+        }
+
+        float auth_sum = std::max(std::accumulate(new_auth_score.begin(), new_auth_score.end(), 0.0), 1.0);
+        float hub_sum = std::max(std::accumulate(new_hub_score.begin(), new_hub_score.end(), 0.0), 1.0);
+
+        score_delta = 0;
+        for(size_t i=0;i<node_count;i++) {
+            score_delta += std::abs(auth_score[i] - new_auth_score[i] / auth_sum);
+            score_delta += std::abs(hub_score[i] - new_hub_score[i] / hub_sum);
+            auth_score[i] = new_auth_score[i] / auth_sum;
+            hub_score[i] = new_hub_score[i] / hub_sum;
+
+            // avoid denormals
+            if(auth_score[i] < std::numeric_limits<float>::epsilon())
+                auth_score[i] = 0;
+            if(hub_score[i] < std::numeric_limits<float>::epsilon())
+                hub_score[i] = 0;
+        }
+    }
+    LOG_DEBUG << "HITS finished in " << hits_iter << " iterations";
+    return auth_score;
+}
+
+/**
+ * @brief Rnaks the network nodes using the SALSA algorithm.
+ * 
+ * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i 
+ * @param out_neighbous ector of vector where out_neighbous[i] is all outbound links of node i
+ * @return std::vector<double> The score of each node
+ * @note in_neighbous and out_neighbous will be modified to become a biparte graph
+ */
+std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, std::vector<std::vector<size_t>>& out_neighbous)
+{
+    size_t node_count = in_neighbous.size();
+    assert(node_count == out_neighbous.size());
+    std::vector<unsigned char> is_auth(node_count);
+    size_t num_hubs = 0;
+    size_t num_auths = 0;
+    for(size_t i = 0; i < node_count; ++i) {
+        is_auth[i] = in_neighbous[i].size() > out_neighbous[i].size();
+        num_hubs += !is_auth[i];
+        num_auths += is_auth[i];
+    }
+    for(size_t i = 0; i < node_count; ++i) {
+        size_t size = in_neighbous[i].size();
+        for(size_t j = 0; j < size ; ++j) {
+            auto idx = in_neighbous[i][j];
+            if(is_auth[idx] == is_auth[i]) {
+                if(j != size-1)
+                    std::swap(in_neighbous[i][j], in_neighbous[i][size-1]);
+                size--;
+                j--;
+            }
+        }
+        in_neighbous[i].resize(size);
+        size = out_neighbous[i].size();
+        for(size_t j = 0; j < size ; ++j) {
+            auto idx = out_neighbous[i][j];
+            if(is_auth[idx] == is_auth[i]) {
+                if(j != size-1)
+                    std::swap(out_neighbous[i][j], out_neighbous[i][size-1]);
+                size--;
+                j--;
+            }
+        }
+    }
+
+    float score_delta = std::numeric_limits<float>::max_digits10;
+    constexpr float epsilon = 0.005*2;
+    constexpr size_t max_iter = 300;
+    std::vector<double> score;
+    std::vector<double> new_score;
+    score.resize(node_count);
+    new_score.resize(node_count);
+    for(size_t i=0;i<node_count;i++)
+        score[i] = 1.0 / (is_auth[i] ? num_auths : num_hubs);
+
+    // The SALSA algorithm
+    size_t salsa_iter = 0;
+    for(salsa_iter=0;salsa_iter<max_iter && score_delta > epsilon;salsa_iter++) {
+        for(size_t i=0;i<node_count;i++) {
+            if(is_auth[i]) {
+                new_score[i] = std::accumulate(in_neighbous[i].begin(), in_neighbous[i].end(), 0.0, [&](double sum, size_t idx) {
+                    return sum + 
+                        std::accumulate(out_neighbous[idx].begin(), out_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
+                            return sum + score[idx2] / std::max(in_neighbous[idx2].size(), size_t{1});
+                        }) / std::max(out_neighbous[idx].size(), size_t{1});
+                });
+            }
+            else {
+                new_score[i] = std::accumulate(out_neighbous[i].begin(), out_neighbous[i].end(), 0.0, [&](double sum, size_t idx) {
+                    return sum + 
+                        std::accumulate(in_neighbous[idx].begin(), in_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
+                            return sum + score[idx2] / std::max(out_neighbous[idx2].size(), size_t{1});
+                        }) / std::max(in_neighbous[idx].size(), size_t{1});;
+                });
+            }
+        }
+        double sum = std::max(std::accumulate(score.begin(), score.end(), 0.0), 1.0);
+
+        score_delta = 0.0;
+        for(size_t i=0;i<node_count;i++) {
+            score_delta += std::abs(new_score[i]/sum - score[i]);
+            score[i] = new_score[i]/sum;
+        }
+    }
+    LOG_DEBUG << "SALSA finished in " << salsa_iter << " iterations";
+    return score;
+}
+
+SearchController::SearchController()
+{
+    auto tlgs = app().getCustomConfig()["tlgs"];
+    if(tlgs.isNull())
+        return;
+
+    auto ranking_algo = tlgs["ranking_algo"];
+    if(!ranking_algo.isNull()) {
+        auto algo = ranking_algo.asString();
+        if(algo == "hits")
+            ranking_algorithm = RankingAlgorithm::HITS;
+        else if(algo == "salsa")
+            ranking_algorithm = RankingAlgorithm::SALSA;
+        else {
+            LOG_WARN << "Unknown ranking algorithm: " << algo << ", use HITS instead";
+            ranking_algorithm = RankingAlgorithm::HITS;
+        }
+    }
+}
+
 // Search with scoring using the HITS algorithm
 Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& query_str)
 {
@@ -281,64 +459,23 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         in_neighbous[dest_node_idx].push_back(source_node_idx);
     }
 
-    // The HITS algorithm
-    float score_delta = std::numeric_limits<float>::max_digits10;
-    constexpr float epsilon = 0.005;
-    constexpr size_t max_iter = 300;
-    std::vector<double> auth_score;
-    std::vector<double> hub_score;
-    std::vector<double> new_auth_score;
-    std::vector<double> new_hub_score;
-    auth_score.resize(nodes.size(), 1.0/nodes.size());
-    hub_score.resize(nodes.size(), 1.0/nodes.size());
-    new_auth_score.resize(nodes.size());
-    new_hub_score.resize(nodes.size());
-    size_t hits_iter = 0;
-    for(hits_iter=0;hits_iter<max_iter && score_delta > epsilon;hits_iter++) {
-        for(size_t i=0;i<nodes.size();i++) {
-            new_auth_score[i] = auth_score[i];
-            new_hub_score[i] = hub_score[i];
-            float calc_auth_score = 0; 
-            float calc_hub_score = 0;
-            for(auto neighbour_idx : in_neighbous[i])
-                calc_auth_score += hub_score[neighbour_idx];
-            for(auto neighbour_idx : out_neighbous[i])
-                calc_hub_score += auth_score[neighbour_idx];
+    std::vector<double> score;
+    if(ranking_algorithm == RankingAlgorithm::HITS)
+        score = hitsRank(in_neighbous, out_neighbous);
+    else
+        score = salsaRank(in_neighbous, out_neighbous);
 
-            if(calc_auth_score != 0)
-                new_auth_score[i] = calc_auth_score;
-            if(calc_hub_score != 0)
-                new_hub_score[i] = calc_hub_score;
-        }
-
-        float auth_sum = std::max(std::accumulate(new_auth_score.begin(), new_auth_score.end(), 0.0), 1.0);
-        float hub_sum = std::max(std::accumulate(new_hub_score.begin(), new_hub_score.end(), 0.0), 1.0);
-
-        score_delta = 0;
-        for(size_t i=0;i<nodes.size();i++) {
-            score_delta += std::abs(auth_score[i] - new_auth_score[i] / auth_sum);
-            score_delta += std::abs(hub_score[i] - new_hub_score[i] / hub_sum);
-            auth_score[i] = new_auth_score[i] / auth_sum;
-            hub_score[i] = new_hub_score[i] / hub_sum;
-
-            // avoid denormals
-            if(auth_score[i] < std::numeric_limits<float>::epsilon())
-                auth_score[i] = 0;
-            if(hub_score[i] < std::numeric_limits<float>::epsilon())
-                hub_score[i] = 0;
-        }
-    }
-    LOG_DEBUG << "HITS finished in " << hits_iter << " iterations";
-
-    float max_auth_score = *std::max_element(auth_score.begin(), auth_score.end());
-    if(max_auth_score == 0)
-        max_auth_score = 1;
-    // Combine the text score and the HITS score. Really want to use BM25 as text score
+    float max_score = *std::max_element(score.begin(), score.end());
+    if(max_score == 0)
+        max_score = 1;
+    // Combine the text score and the rank score. Really want to use BM25 as text score
     // XXX: This scoring function works. But it kinda sucks
     for(size_t i=0;i<nodes.size();i++) {
         auto& node = nodes[i];
-        float boost = exp((auth_score[i] / max_auth_score)*6.5);
+        float boost = exp((score[i] / max_score)*6.5);
         node.score = 2*(boost * text_rank[i]) / (boost + text_rank[i]);
+        if(node.size > 32*1000)
+            node.score *= 0.8;
     }
 
     // Deduplicate the search results using URL and hash. Currently it merges the results if the hash is the same

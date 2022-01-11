@@ -83,7 +83,9 @@ sudo systemctl start tlgs_crawler
 - [ ] Support parsing markdown
 - [ ] Try indexing news sites
 - [ ] Optimize the crawler even more
-- [ ] Link analysis using SALSA
+- [x] ~~Link analysis using SALSA~~
+  * SALSA is implemented. But it is slower without providing better ranking
+  * Maybe Gemini is not complicated enough for HITS to fail
 - [ ] BM25 for text scoring
 - [ ] Support Atom feeds
 - [x] Dedeuplicate search result
