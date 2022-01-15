@@ -388,6 +388,10 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 , url.str());
             co_return;
         }
+        // trim tailing spaces from title
+        auto last_non_space = title.find_last_not_of(' ');
+        if(last_non_space != 0 && last_non_space != std::string::npos)
+            title.resize(last_non_space + 1);
 
         // TODO: Avoid parsing links when the content doesn't change
         std::vector<std::string> cross_site_links;

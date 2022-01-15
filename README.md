@@ -84,11 +84,9 @@ sudo systemctl start tlgs_crawler
 - [ ] Try indexing news sites
 - [ ] Optimize the crawler even more
 - [x] ~~Link analysis using SALSA~~
-  * SALSA is implemented. But it is slower without providing better ranking
+  * SALSA is implemented. But it is slower with the same rank quality
   * Maybe Gemini is not complicated enough for HITS to fail
 - [ ] BM25 for text scoring
-- [ ] Support Atom feeds
 - [x] Dedeuplicate search result
 - [x] Impement Filters
-- [ ] Remove VT control code embedded in pages
 - [ ] Proper(?) way to migrate schema

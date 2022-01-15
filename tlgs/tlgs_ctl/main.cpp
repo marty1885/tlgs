@@ -84,6 +84,19 @@ Task<> purgePage(std::string url)
 	app().quit();
 }
 
+Task<> indexStatus()
+{
+	auto db = app().getDbClient();
+	auto domain = co_await db->execSqlCoro("SELECT COUNT(DISTINCT domain_name) AS count FROM pages WHERE content_body IS NOT NULL");
+	auto pages = co_await db->execSqlCoro("SELECT COUNT(*) AS count FROM pages WHERE content_body IS NOT NULL");
+	auto pages_need_update = co_await db->execSqlCoro("SELECT COUNT(*) AS count FROM pages WHERE "
+		"last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY OR last_crawled_at IS NULL");
+	std::cout << domain[0]["count"].as<size_t>() << " domains in index\n";
+	std::cout << pages[0]["count"].as<size_t>() << " pages in index\n";
+	std::cout << pages_need_update[0]["count"].as<size_t>() << " pages need update\n";
+	app().quit();
+}
+
 int main(int argc, char** argv)
 {
 	std::string config_file = "/etc/tlgs/config.json";
@@ -93,7 +106,9 @@ int main(int argc, char** argv)
 
 	CLI::App& purge = *cli.add_subcommand("purge", "Remove page from database");
 	std::string url;
-	purge.add_option("purge_url", url, "URL to purge");
+	purge.add_option("purge_url", url, "URL to purge (SQL wildcards allowed)");
+
+	CLI::App& index_status = *cli.add_subcommand("indexstatus", "Show status of the index");
 
 	cli.add_option("config_file", config_file, "Path to TLGS config file");
 	CLI11_PARSE(cli, argc, argv);
@@ -102,13 +117,17 @@ int main(int argc, char** argv)
 
 	if(populate_schema) {
 		app().getLoop()->queueInLoop(async_func(createDb));
-		app().run();
 	}
 	else if(purge) {
 		app().getLoop()->queueInLoop(async_func(std::bind(purgePage, url)));
-		app().run();
+	}
+	else if(index_status) {
+		app().getLoop()->queueInLoop(async_func(indexStatus));
 	}
 	else {
 		std::cout << cli.help();
+		return 0;
 	}
+
+	app().run();
 }

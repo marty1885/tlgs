@@ -540,9 +540,9 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
-    for(const auto& [_, item] : result_map) {
-        search_result.push_back(*item);
-    }
+    for(auto& [_, item] : result_map)
+        search_result.emplace_back(*item);
+
     std::sort(search_result.begin(), search_result.end(), [](const auto& a, const auto& b) {
         return a.score > b.score;
     });
@@ -603,9 +603,9 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         co_return resp;
     }
 
-    using HitsResult = std::vector<RankedResult>;
+    using RankedResults = std::vector<RankedResult>;
 
-    static CacheMap<std::string, std::shared_ptr<HitsResult>> result_cache(app().getLoop(), 60);
+    static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
     const static std::regex re(R"((?:\/v)?\/search\/([0-9]+))");
     std::smatch match;
     size_t current_page_idx = 0;
@@ -616,24 +616,23 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         }
     }
 
-    std::shared_ptr<HitsResult> ranked_result;
+    std::shared_ptr<RankedResults> ranked_result;
     bool cached = true;
-    auto db = app().getDbClient();
     if(result_cache.findAndFetch(query_str, ranked_result) == false) {
         std::vector<RankedResult> result;
         result = co_await hitsSearch(query_str);
-        ranked_result = std::make_shared<HitsResult>(std::move(result));
+        ranked_result = std::make_shared<RankedResults>(std::move(result));
         result_cache.insert(query_str, ranked_result, 600);
         cached = false;
     }
     if(ranked_result == nullptr)
         throw std::runtime_error("search result is nullptr");
     // TODO: Maybe cache filtered results?
-    std::shared_ptr<HitsResult> filtered_result = ranked_result;
+    std::shared_ptr<RankedResults> filtered_result = ranked_result;
     if(filter.content_type.size() != 0
         || filter.size.size() != 0
         || filter.domain.size() != 0) {
-        filtered_result = std::make_shared<HitsResult>();
+        filtered_result = std::make_shared<RankedResults>();
         for(const auto& item : *ranked_result) {
             if(evalFilter(tlgs::Url(item.url).host(), item.content_type, item.size, filter))
                 filtered_result->push_back(item);
@@ -660,10 +659,11 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     if(!url_array.empty()) {
         // HACK: Use the first 5K characters for highligh search. This is MUCH faster
         // without loosing too much accuracy
+        auto db = app().getDbClient();
         auto page_data = co_await db->execSqlCoro("SELECT url, size, title, content_type, "
             "ts_headline(SUBSTRING(content_body, 0, 5000), plainto_tsquery($1), 'StartSel=\"\", "
                 "StopSel=\"\", MinWords=23, MaxWords=37, MaxFragments=1, FragmentDelimiter=\" ... \"') AS preview, "
-            "last_crawled_at FROM pages WHERE url IN ("+url_array+");", query_str);
+            "last_crawl_success_at FROM pages WHERE url IN ("+url_array+");", query_str);
 
         std::unordered_map<std::string, size_t> result_idx;
         for(size_t i=0;i<page_data.size();i++) {
@@ -684,7 +684,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
                 .title = page["title"].as<std::string>(),
                 .content_type = page["content_type"].as<std::string>(),
                 .preview = page["preview"].as<std::string>(),
-                .last_crawled_at = trantor::Date::fromDbStringLocal(page["last_crawled_at"].as<std::string>())
+                .last_crawled_at = trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
                     .toCustomedFormattedString("%Y-%m-%d %H:%M:%S", false),
                 .size = page["size"].as<uint64_t>(),
                 .score = item.score
