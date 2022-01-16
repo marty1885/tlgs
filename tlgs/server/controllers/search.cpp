@@ -473,9 +473,12 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     for(size_t i=0;i<nodes.size();i++) {
         auto& node = nodes[i];
         float boost = exp((score[i] / max_score)*6.5);
-        node.score = 2*(boost * text_rank[i]) / (boost + text_rank[i]);
-        if(node.size > 32*1000)
-            node.score *= 0.8;
+        float rank = text_rank[i];
+        // discourage pages too large
+        const size_t discourage_size = 48*1000; // 48KB
+        if(node.size > discourage_size)
+            rank *= 1/log(std::numbers::e+(node.size - discourage_size)/(1000*3));
+        node.score = 2*(boost * rank) / (boost + rank);
     }
 
     // Deduplicate the search results using URL and hash. Currently it merges the results if the hash is the same
@@ -491,10 +494,12 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     std::string buf(8, '\0');
     drogon::utils::secureRandomBytes(buf.data(), buf.size());
     std::string token = "/"+drogon::utils::binaryStringToHex((unsigned char*)buf.data(), buf.size());
+    size_t num_root = 0;
     for(size_t i=0;i<nodes.size();i++) {
         auto& node = nodes[i];
         if(is_root[i] == false)
             continue;
+        num_root++;
         auto [begin, end] = result_map.equal_range(node.content_hash);
         if(node.size == 0 || begin == end) {
             result_map.emplace(node.content_hash, &node);
@@ -536,7 +541,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         if(replaced == false)
             result_map.emplace(node.content_hash, &node);
     }
-    LOG_DEBUG << "Deduplication removed " << nodes.size() - result_map.size() << " results";
+    LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results";
 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
