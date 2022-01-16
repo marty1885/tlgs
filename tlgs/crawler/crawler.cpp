@@ -262,22 +262,21 @@ void GeminiCrawler::dispatchCrawl()
             // 1. There's no more URL to crawl
             // 2. The current crawl is the last one in existance
             //    * Since a crawler can add new items into the queue
-            if(url_str.has_value() == false && ongoing_crawlings_ == 1) {
-                ended_ = true;
+            if(url_str.has_value() == false) {
+                counter = nullptr;
+                if(ongoing_crawlings_ == 0)
+                    ended_ = true;
                 co_return;
             }
 
-            if(url_str.has_value()) {
-                try {
-                    co_await crawlPage(url_str.value());
-                    LOG_INFO << "Crawled " << url_str.value();
-                }
-                catch(std::exception& e) {
-                    LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
-                }
-                counter = nullptr;
-                loop_->queueInLoop([this](){dispatchCrawl();});
+            try {
+                co_await crawlPage(url_str.value());
+                LOG_INFO << "Crawled " << url_str.value();
             }
+            catch(std::exception& e) {
+                LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
+            }
+            loop_->queueInLoop([this](){dispatchCrawl();});
         });
     }
 }
