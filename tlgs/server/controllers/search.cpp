@@ -541,7 +541,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         if(replaced == false)
             result_map.emplace(node.content_hash, &node);
     }
-    LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results";
+    LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results for search term `" << query_str <<"`";
 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
