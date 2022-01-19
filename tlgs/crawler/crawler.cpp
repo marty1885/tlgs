@@ -263,7 +263,6 @@ void GeminiCrawler::dispatchCrawl()
             // 2. The current crawl is the last one in existance
             //    * Since a crawler can add new items into the queue
             if(url_str.has_value() == false) {
-                counter = nullptr;
                 if(counter->release() == 1)
                     ended_ = true;
                 co_return;
