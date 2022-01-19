@@ -264,7 +264,7 @@ void GeminiCrawler::dispatchCrawl()
             //    * Since a crawler can add new items into the queue
             if(url_str.has_value() == false) {
                 counter = nullptr;
-                if(ongoing_crawlings_ == 0)
+                if(counter->release() == 1)
                     ended_ = true;
                 co_return;
             }

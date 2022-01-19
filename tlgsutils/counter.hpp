@@ -32,6 +32,14 @@ struct Counter
             (*counter_)--;
     }
 
+    size_t release()
+    {
+        size_t n = --(*counter_);
+        counter_ = nullptr;
+        count_ = -1;
+        return n;
+    }
+
     size_t count_ = -1;
     std::atomic<size_t>* counter_;
 };
