@@ -392,8 +392,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             title.resize(last_non_space + 1);
 
         // TODO: Avoid parsing links when the content doesn't change
-        std::vector<std::string> cross_site_links;
-        std::vector<std::string> internal_links;
+        std::set<std::string> cross_site_links;
+        std::set<std::string> internal_links;
         for(const auto& link : links) {
             if(tlgs::isNonUriAction(link))
                 continue;
@@ -415,9 +415,9 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 
             bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
             if(is_cross_site)
-                cross_site_links.push_back(link_url.str());
+                cross_site_links.insert(link_url.str());
             else
-                internal_links.push_back(link_url.str());
+                internal_links.insert(link_url.str());
         }
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
