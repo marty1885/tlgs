@@ -3,6 +3,7 @@
 #include <vector>
 #include <regex>
 #include <tlgsutils/url_parser.hpp>
+#include <tlgsutils/trie.hpp>
 
 bool inBlacklist(const std::string& url_str)
 {
@@ -233,38 +234,43 @@ bool inBlacklist(const std::string& url_str)
         "gemini://202x.moe/resonance"
     };
 
+    static tlgs::trie_map<char, tlgs::SetCounter> blacklist_trie;
+    static std::once_flag blacklist_init;
+    std::call_once(blacklist_init, [&]() {
+        for (auto& url : blacklist_urls)
+            blacklist_trie.insert(url);
+    });
+    // If the domain or URL is blacklisted, we don't want to index it
+    if(blacklist_domains.count(url.host()) != 0)
+        return true;
+    if(blacklist_trie.containsPrefixOf(url.str()))
+        return true;
+
+    // Ignore all potential git repos
+    if(url.str().starts_with("/git/"))
+        return true;
     if(url.host().starts_with("git."))
         return true;
     if(url.str().find(".git/tree/") != std::string::npos)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
+
     // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
         return true;
     // links should not contain ASCII control characters
-    for(char ch : url.str()) {
-        if(ch >= 0 && ch <=26)
-            return true;
-    }
+    if(auto url_str = url.str();
+        std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 26; }) != url_str.end())
+        return true;
 
     //XXX: half working way to detect commits
     auto n = url.str().find("commits/");
     if(n != std::string::npos) {
-        static const std::regex re("commits/[a-z0-9A-Z]+.*");
+        static const std::regex re("commits/[a-z0-9A-Z]+/.*");
         std::smatch sm;
         std::string commit = url.str().substr(n);
         if(std::regex_match(commit, sm, re))
-            return true;
-    }
-
-    if(url.str().starts_with("/git/"))
-        return true;
-
-    if(blacklist_domains.count(url.host()) != 0)
-        return true;
-    for(const auto& blocked : blacklist_urls) {
-        if(url.str().starts_with(blocked))
             return true;
     }
 
