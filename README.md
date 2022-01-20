@@ -83,6 +83,9 @@ sudo systemctl start tlgs_crawler
 - [ ] Support parsing markdown
 - [ ] Try indexing news sites
 - [ ] Optimize the crawler even more
+  - [x] Checks hash before updating index
+  - [ ] Peoper UTF-8 handling in ASCII art detection
+  - [ ] Use a trie to store for blacklist URL match
 - [x] ~~Link analysis using SALSA~~
   * SALSA is implemented. But it is slower with the same rank quality
   * Maybe Gemini is not complicated enough for HITS to fail

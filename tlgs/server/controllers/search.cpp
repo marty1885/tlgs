@@ -546,7 +546,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
     for(auto& [_, item] : result_map)
-        search_result.emplace_back(*item);
+        search_result.emplace_back(std::move(*item));
 
     std::sort(search_result.begin(), search_result.end(), [](const auto& a, const auto& b) {
         return a.score > b.score;
