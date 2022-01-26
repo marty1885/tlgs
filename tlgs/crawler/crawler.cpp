@@ -438,7 +438,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash);
 
         co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ') || content_body), "
-            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(url, '-', ' '), '/', ' '), 'gemini://', ' '), '.', ' '). 'gemini.', ' ')), "
+            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
             "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
 
         co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
