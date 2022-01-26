@@ -44,10 +44,21 @@ public:
      */
     Task<void> awaitEnd()
     {
+        int finish_count = 0;
         while(true) {
             co_await drogon::sleepCoro(loop_, 0.2);
             if(ended_)
                 break;
+
+            // HACK: Sometimes ended_ is not set. Workaround when we see 5 conseqitive 0 crawlings 
+            if(ongoing_crawlings_ == 0)
+                finish_count ++;
+            else
+                finish_count = 0;
+            if(finish_count == 5) {
+                ended_ = true;
+                break;
+            }
         }
         co_return;
     }
