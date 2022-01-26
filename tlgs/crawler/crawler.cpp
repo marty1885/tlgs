@@ -240,44 +240,46 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
 
 void GeminiCrawler::dispatchCrawl()
 {
+    if(ended_)
+        return;
     // In case I forgot how this works in the future:
-    // Start new crawls up to max_concurrent_connections_. And launch new crawls when one finishes. This function is tricky
-    // and difficult to understand. It's a bit of a hack. But it is 100% lock free. The general idea is as follows:
+    // Start new crawls up to max_concurrent_connections_. And launch new crawls when we might have more pages to crawl.
+    // This function is tricky and difficult to understand. It's a bit of a hack. But it is 100% lock free. The general idea is asi
+    // follows:
     // 1. A atomic counter is used to keep track of the number of active crawls.
-    // 2. We try to dispatch as many crawls as possible.
+    // 2. If we successfully got new url to crawl, we spawn dispatch a new crawl.
     // 3. When a crawl finishes, we resubmit the crawl task.
-    //    * It is possible for crawls to finish at a close enough time. Causing a resubmit to dispatch multiple crawls.
-    //    * It doesn't matter. Since the other dispatches will just dispatch 0 crawls.
+    //    * Keep re-submiting crawls until there's no more to crawl
+    //    * It doesn't matter if currently enough crawler exists. Since the counter stops them from crawling
     // 4. Near the end of crawling. It might be possible that there's not enough pages to be crawled
     //    * But a crawler may suddenly submit more links for crawling.
-    //    * The nature to dispatch as much as possible helps here. Reactivating crawls if neded.
-    while(!ended_) {
-        auto counter = std::make_shared<tlgs::Counter>(ongoing_crawlings_);
-        if(counter->count() >= max_concurrent_connections_)
-            break;
+    //    * The nature of dispatching more and more crawlers help. Reactivating crawls if neded.
+    auto counter = std::make_shared<tlgs::Counter>(ongoing_crawlings_);
+    if(counter->count() >= max_concurrent_connections_)
+        return;
 
-        async_run([counter, this]() mutable -> Task<void> {
-            auto url_str = co_await getNextCrawlPage();
-            // Crawling has ended if the following is true
-            // 1. There's no more URL to crawl
-            // 2. The current crawl is the last one in existance
-            //    * Since a crawler can add new items into the queue
-            if(url_str.has_value() == false) {
-                if(counter->release() == 1)
-                    ended_ = true;
-                co_return;
-            }
+    async_run([counter, this]() mutable -> Task<void> {
+        auto url_str = co_await getNextCrawlPage();
+        // Crawling has ended if the following is true
+        // 1. There's no more URL to crawl
+        // 2. The current crawl is the last one in existance
+        //    * Since a crawler can add new items into the queue
+        if(url_str.has_value() == false) {
+            if(counter->release() == 1)
+                ended_ = true;
+            co_return;
+        }
+        loop_->runInLoop([this](){dispatchCrawl();});
 
-            try {
-                co_await crawlPage(url_str.value());
-                LOG_INFO << "Crawled " << url_str.value();
-            }
-            catch(std::exception& e) {
-                LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
-            }
-            loop_->queueInLoop([this](){dispatchCrawl();});
-        });
-    }
+        try {
+            co_await crawlPage(url_str.value());
+            LOG_INFO << "Crawled " << url_str.value();
+        }
+        catch(std::exception& e) {
+            LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
+        }
+        loop_->queueInLoop([this](){dispatchCrawl();});
+    });
 }
 
 Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
