@@ -10,6 +10,7 @@
 #include <drogon/utils/Utilities.h>
 #include <drogon/utils/coroutine.h>
 
+#include <stdexcept>
 #include <tlgsutils/gemini_parser.hpp>
 #include <tlgsutils/robots_txt_parser.hpp>
 #include <tlgsutils/url_parser.hpp>
@@ -293,6 +294,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     std::string error;
     bool failed = false;
     try {
+        if(co_await shouldCrawl(url.str()) == false)
+            throw std::runtime_error("Blocked by robots.txt");
         auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash , raw_content_hash "
             "FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
