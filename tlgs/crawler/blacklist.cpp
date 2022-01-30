@@ -29,7 +29,8 @@ bool inBlacklist(const std::string& url_str)
         "thurk.org",
         "git.thebackupbox.net",
         "mikelynch.org",
-        "going-flying.com"
+        "going-flying.com",
+        "gemini.rmf-dev.com"
     };
 
     static const std::vector<std::string> blacklist_urls = {
