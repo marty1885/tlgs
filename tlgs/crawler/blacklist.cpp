@@ -2,6 +2,7 @@
 #include <set>
 #include <vector>
 #include <regex>
+#include <mutex>
 #include <tlgsutils/url_parser.hpp>
 #include <tlgsutils/trie.hpp>
 
