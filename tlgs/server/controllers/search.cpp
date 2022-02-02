@@ -308,22 +308,36 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
 
     // The SALSA algorithm
     size_t salsa_iter = 0;
+    std::vector<float> local_in_score(node_count);
+    std::vector<float> local_out_score(node_count);
     for(salsa_iter=0;salsa_iter<max_iter && score_delta > epsilon;salsa_iter++) {
+        for(size_t i=0;i<node_count;i++) {
+            local_in_score[i] = -1;
+            local_out_score[i] = -1;
+        }
         for(size_t i=0;i<node_count;i++) {
             if(is_auth[i]) {
                 new_score[i] = std::accumulate(in_neighbous[i].begin(), in_neighbous[i].end(), 0.0, [&](double sum, size_t idx) {
-                    return sum + 
-                        std::accumulate(out_neighbous[idx].begin(), out_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
+                    double neibour_score = local_out_score[idx];
+                    if(neibour_score == -1) {
+                        neibour_score = std::accumulate(out_neighbous[idx].begin(), out_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
                             return sum + score[idx2] / std::max(in_neighbous[idx2].size(), size_t{1});
                         }) / std::max(out_neighbous[idx].size(), size_t{1});
+                        local_out_score[idx] = neibour_score;
+                    }
+                    return sum + neibour_score;
                 });
             }
             else {
                 new_score[i] = std::accumulate(out_neighbous[i].begin(), out_neighbous[i].end(), 0.0, [&](double sum, size_t idx) {
-                    return sum + 
-                        std::accumulate(in_neighbous[idx].begin(), in_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
+                    double neibour_score = local_in_score[idx];
+                    if(neibour_score == -1) {
+                        neibour_score = std::accumulate(in_neighbous[idx].begin(), in_neighbous[idx].end(), 0.0, [&](double sum, size_t idx2) {
                             return sum + score[idx2] / std::max(out_neighbous[idx2].size(), size_t{1});
-                        }) / std::max(in_neighbous[idx].size(), size_t{1});;
+                        }) / std::max(in_neighbous[idx].size(), size_t{1});
+                        local_in_score[idx] = neibour_score;
+                    }
+                    return sum + neibour_score;
                 });
             }
         }

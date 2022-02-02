@@ -1,7 +1,7 @@
 {
 	"app":{
-	    "document_root": "./contents",
-	    "file_types": [
+		"document_root": "./contents",
+		"file_types": [
 			"gif",
 			"png",
 			"jpg",
@@ -16,16 +16,16 @@
 			"xml",
 			"gmi",
 			"txt"
-	    ],
-	    "use_implicit_page": true,
-	    "implicit_page": "index.gmi",
-	    "home_page": "index.gmi",
-	    "mime": {
-	    	"text/gemini": ["gmi", "gemini"]
-	    }
+		],
+		"use_implicit_page": true,
+		"implicit_page": "index.gmi",
+		"home_page": "index.gmi",
+		"mime": {
+			"text/gemini": ["gmi", "gemini"]
+		}
 	},
 	"plugins": [
-	    {
+		{
 			"name": "dremini::GeminiServerPlugin",
 			"config": {
 				"listeners": [
@@ -39,7 +39,7 @@
 				"numThread": 3,
 				"translate_to_html": true
 			}
-	    }
+		}
 	],
 	"listeners": [
 		{
@@ -47,20 +47,19 @@
 			"port": 8808
 		}
 	],
-    "db_clients": [
-        {
-            "rdbms": "postgresql",
-            "host": "127.0.0.1",
-            "port": 5432,
-            "dbname": "tlgs",
-            "number_of_connections": 4,
-            "timeout": 10
-        }
-     ],
+	"db_clients": [
+		{
+			"rdbms": "postgresql",
+			"host": "127.0.0.1",
+			"port": 5432,
+			"dbname": "tlgs",
+			"number_of_connections": 4,
+			"timeout": 10
+		}
+	 ],
 	 "custom_config": {
 		 "tlgs": {
 			 "ranking_algo": "hits"
 		 }
 	 }
 }
-    

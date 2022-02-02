@@ -83,7 +83,7 @@ The `custom_config.tlgs` section in `search_config.json` (installed at `/etc/tlg
 ### ranking_algo
 The ranking algorithm TLGS uses to rank pages in search result. The ranking is then combined with the text match score to produce the final search rank. Current supported values are `hits` and `salsa`. Refering to the [HITS][hits] and [SALSA][salsa] ranking algorithm. It defaults to `hits` if no value is provided.
 
-HITS runs faster than SALSA. Also while [literature][najork2007comparing] suggesres SALSA provides better result. From experience HITS is better at ranking Gemini.
+SALSA runs as fast as HITS for large search results. While [literature][najork2007comparing] suggesrts SALSA provides better ranking. From experience HITS is better at ranking Gemini.
 
 ```json
 "ranking_algo": "hits"
