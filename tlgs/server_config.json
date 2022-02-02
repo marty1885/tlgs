@@ -59,7 +59,7 @@
 	 ],
 	 "custom_config": {
 		 "tlgs": {
-			 "ranking_algo": "hits"
+			 "ranking_algo": "salsa"
 		 }
 	 }
 }

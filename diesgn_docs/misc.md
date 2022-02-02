@@ -10,4 +10,5 @@ The decition to use PostgreSQL instead of dedicated search engines like ElasticS
 
 It is easier in the earlier development process. PageRank run on the entire network graph instead of a subset. Thus it scales less and requires more inital work to get going. HITS on the other hand runs on a subset of the graph. Making it easier to debug since I don't need to have a an entire database ready (this is from an early stage of development). The original idea was to use SALSA. But SALSA requires the text search algorithm to determine which nodes are the hubs. It turns out to be hard to do. Full text search returns the entire list of possible sites without any room for potential hubs in most cases. Crumblimg the algorithm.
 
-Totally would want to switch to SALSA if I can. To avoid TKC problem.
+~~Totally would want to switch to SALSA if I can. To avoid TKC problem.~~
+**Update:** Ditched HITS. Now using SALSA. Turns out the original SALSA paper has a easy way to distingush hubs and auths.

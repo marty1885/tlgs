@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-2-2
+
+I switched the ranking algorithm from HITS to SALSA after some optimization and bug fixes. It is faster than HITS and surfaces more relevant pages. Also very pround that gemini.circumlunar.space is finally the first link in the search result when I search for "gemini". Followed by other very popular capsules like medusae.space!
+
 ### 2022-1-9
 
 Happy new year! The search engine can decuplicate search results. Hopefully it improes the user experience. Let me know if it hilds important results for you. It shouldn't. But who knows. maybe a bug is hiding.

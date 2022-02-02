@@ -54,7 +54,7 @@ public:
 
     Task<std::vector<RankedResult>> pageSearch(const std::string& query_str);
     std::atomic<size_t> search_in_flight{0};
-    RankingAlgorithm ranking_algorithm = RankingAlgorithm::HITS;
+    RankingAlgorithm ranking_algorithm = RankingAlgorithm::SALSA;
 };
 
 auto sanitizeGemini(std::string preview) -> std::string {
@@ -368,8 +368,8 @@ SearchController::SearchController()
         else if(algo == "salsa")
             ranking_algorithm = RankingAlgorithm::SALSA;
         else {
-            LOG_WARN << "Unknown ranking algorithm: " << algo << ", use HITS instead";
-            ranking_algorithm = RankingAlgorithm::HITS;
+            LOG_WARN << "Unknown ranking algorithm: " << algo << ", defaulting to SALSA instead";
+            ranking_algorithm = RankingAlgorithm::SALSA;
         }
     }
 }

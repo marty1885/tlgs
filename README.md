@@ -11,7 +11,7 @@ TLGS is a search engine for Gemini. It's slightly overengineered for what it cur
 * Developed for Linux. But should work on Windows, OpenBSD, HaikuOS, macOS, etc..
 * Only fetch headers for files it can't index to save bandwith and time
 * Handles all kinds of source encoding
-* Link analysis using the HITS algorithm
+* Link analysis using the SALSA algorithm
 
 As of now, indexing of news sites, RFCs, documentations are mostly disabled. But likely be enabled once I have the mean and resources to scale the setup.
 
@@ -81,12 +81,12 @@ sudo systemctl start tlgs_crawler
 The `custom_config.tlgs` section in `search_config.json` (installed at `/etc/tlgs/server_config.json`) contains confgurations for TLGS server. Besides the usual [Drogon's config options](https://drogon.docsforge.com/master/configuration-file/). custom_config changes the property of TLGS itself. Current supported options are:
 
 ### ranking_algo
-The ranking algorithm TLGS uses to rank pages in search result. The ranking is then combined with the text match score to produce the final search rank. Current supported values are `hits` and `salsa`. Refering to the [HITS][hits] and [SALSA][salsa] ranking algorithm. It defaults to `hits` if no value is provided.
+The ranking algorithm TLGS uses to rank pages in search result. The ranking is then combined with the text match score to produce the final search rank. Current supported values are `hits` and `salsa`. Refering to the [HITS][hits] and [SALSA][salsa] ranking algorithm. It defaults to `salsa` if no value is provided.
 
-SALSA runs as fast as HITS for large search results. While [literature][najork2007comparing] suggesrts SALSA provides better ranking. From experience HITS is better at ranking Gemini.
+SALSA runs slightly faster than HITS for large search results. Both [literature][najork2007comparing] and imperical experience suggests SALSA provides better ranking. Thus we switched from HITS to SALSA.
 
 ```json
-"ranking_algo": "hits"
+"ranking_algo": "salsa"
 ```
 
 ## TODOs
@@ -99,9 +99,7 @@ SALSA runs as fast as HITS for large search results. While [literature][najork20
   - [x] Checks hash before updating index
   - [ ] Peoper UTF-8 handling in ASCII art detection
   - [x] Use a trie for blacklist URL match
-- [x] ~~Link analysis using SALSA~~
-  * SALSA is implemented. But it is slower with the same rank quality
-  * Maybe Gemini is not complicated enough for HITS to fail
+- [x] Link analysis using SALSA
 - [ ] BM25 for text scoring
 - [x] Dedeuplicate search result
 - [x] Impement Filters

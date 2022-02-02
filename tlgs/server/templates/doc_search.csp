@@ -8,7 +8,7 @@ TLGS uses a combination of content ranking and link analysis to generate the sea
 Here's links if you want to learn more:
 
 => https://en.wikipedia.org/wiki/Full-text_search Wikipedia: Full-text search
-=> http://pi.math.cornell.edu/~mec/Winter2009/RalucaRemus/Lecture4/lecture4.html HITS Algorithm - Hubs and Authorities on the Internet
+=> http://www.cs.technion.ac.il/~moran/r/PS/www9.pdf SALSA: The stochastic approach for link-structure analysis (SALSA) and the TKC effect
 
 ### Filters
 
