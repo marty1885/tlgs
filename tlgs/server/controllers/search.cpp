@@ -294,6 +294,7 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
                 j--;
             }
         }
+        out_neighbous[i].resize(size);
     }
 
     float score_delta = std::numeric_limits<float>::max_digits10;
