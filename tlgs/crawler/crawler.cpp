@@ -168,7 +168,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         try {
             std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").str();
             LOG_TRACE << "Fetching robots.txt from " << robot_url;
-            resp = co_await dremini::sendRequestCoro(robot_url, 10, loop_, 0x2625a0);
+            resp = co_await dremini::sendRequestCoro(robot_url, 10, loop_, 0x2625a0, {}, 10);
         }
         catch(std::exception& e) {
             // XXX: Failed to handshake with the host. We should retry later

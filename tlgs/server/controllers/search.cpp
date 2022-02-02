@@ -506,7 +506,13 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
             continue;
         }
 
+        auto to_lower = [](const std::string& str) {
+            std::string ret = str;
+            std::transform(ret.begin(), ret.end(), ret.begin(), ::tolower);
+            return ret;
+        };
         tlgs::Url node_url(node.url);
+        node_url.withHost(to_lower(node_url.host()));
         std::string str = node.url;
         drogon::utils::replaceAll(str, "/~", token);
         drogon::utils::replaceAll(str, "/users", token);
@@ -514,6 +520,7 @@ Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& 
         bool replaced = false;
         for(auto& [_, stored] : std::ranges::subrange(begin, end)) {
             tlgs::Url stored_url(stored->url);
+            stored_url.withHost(to_lower(stored_url.host()));
             std::string str2 = stored->url;
             drogon::utils::replaceAll(str2, "/~", token);
             drogon::utils::replaceAll(str2, "/users", token);
