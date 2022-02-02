@@ -52,7 +52,7 @@ public:
     METHOD_LIST_END
 
 
-    Task<std::vector<RankedResult>> hitsSearch(const std::string& query_str);
+    Task<std::vector<RankedResult>> pageSearch(const std::string& query_str);
     std::atomic<size_t> search_in_flight{0};
     RankingAlgorithm ranking_algorithm = RankingAlgorithm::HITS;
 };
@@ -359,8 +359,7 @@ SearchController::SearchController()
     }
 }
 
-// Search with scoring using the HITS algorithm
-Task<std::vector<RankedResult>> SearchController::hitsSearch(const std::string& query_str)
+Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& query_str)
 {
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "
@@ -632,7 +631,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     bool cached = true;
     if(result_cache.findAndFetch(query_str, ranked_result) == false) {
         std::vector<RankedResult> result;
-        result = co_await hitsSearch(query_str);
+        result = co_await pageSearch(query_str);
         ranked_result = std::make_shared<RankedResults>(std::move(result));
         result_cache.insert(query_str, ranked_result, 600);
         cached = false;
