@@ -128,6 +128,7 @@ bool inBlacklist(const std::string& url_str)
         // news mirrors - not our business
         // TLGS can handle some news. Let's keep them for now
         // "gemini://guardian.shit.cx/", // NOTE: at least try to index one new site!
+        "gemini://taz.de/",
         "gemini://simplynews.metalune.xyz",
         "gemini://illegaldrugs.net/cgi-bin/news.php?",
         "gemini://illegaldrugs.net/cgi-bin/reader",
