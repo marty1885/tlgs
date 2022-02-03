@@ -607,15 +607,23 @@ bool evalFilter(const std::string_view host, const std::string_view content_type
 Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 {
     using namespace std::chrono;
-    auto t1 = high_resolution_clock::now();
-    // Prevent too many search requests piling up
+
+    // Hacky implementation of exponential backoff. We ask each request to wait
+    // more and more until we processed something. Since we can't know how sent
+    // which request
     tlgs::Counter counter(search_in_flight);
-    if(counter.count() > 120) {
+    static std::atomic<size_t> backup_count = 0;
+    if(counter.count() > 64) {
+        size_t count = backup_count++;
+        size_t backoff = count > 9*64 ? 512 : std::pow(2, count/64.0);
         auto resp = HttpResponse::newHttpResponse();
-        resp->addHeader("meta", "SlowDown");
-        resp->setStatusCode((HttpStatusCode)44);
+        resp->addHeader("Retry-After", std::to_string(backoff));
+        resp->setStatusCode(k429TooManyRequests);
         co_return resp;
     }
+    backup_count = 0;
+
+    auto t1 = high_resolution_clock::now();
 
     auto input = utils::urlDecode(req->getParameter("query"));
     auto [query_str, filter] = parseSearchQuery(input);
