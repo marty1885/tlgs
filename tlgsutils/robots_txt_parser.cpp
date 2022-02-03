@@ -47,7 +47,7 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
 
 
 /**
- * @brief Very basic and limited wildcard matching. Only supports a selected common cases
+ * @brief Fast matching for common cases. Otherwise, use the regex. Fast cases include
  *  1. No wildcard
  *  2. Starts with *
  *  3. Ends with *
@@ -62,7 +62,9 @@ static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
 {
     if(pattern.empty())
         return false;
-    if(pattern.find('*') == std::string_view::npos) {
+
+    size_t star_count = std::count(pattern.begin(), pattern.end(), '*');
+    if(star_count == 0) {
         return str == pattern || str == pattern+"/"
             || (str.size() > pattern.size()+1 && str.starts_with(pattern) && (str[pattern.size()] == '/' || pattern.back() == '/'));
     }
@@ -70,22 +72,44 @@ static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
     if(pattern.back() == '$' && (pattern.starts_with("*") || pattern.starts_with("/*")))
         pattern.pop_back();
 
-    if(pattern[0] == '*' && pattern.back() == '*' && pattern.size() > 2)
+    // */foo/bar/*
+    if(pattern[0] == '*' && pattern.back() == '*' && star_count == 2)
         return str.find(pattern.substr(1, pattern.size()-2)) != std::string_view::npos;
-    if(pattern.starts_with("/*") && pattern.back() == '*' && pattern.size() > 3)
+    // /*/foo/*
+    if(pattern.starts_with("/*") && pattern.back() == '*' && star_count == 2)
         return str.find(pattern.substr(2, pattern.size()-3)) != std::string_view::npos;
-    if(pattern[0] == '*')
+    // *fooo...
+    if(pattern[0] == '*' && star_count == 1)
         return str.ends_with(pattern.substr(1));
-    if(pattern.starts_with("/*"))
+    // /*foo...
+    if(pattern.starts_with("/*") && star_count == 1)
         return str.ends_with(pattern.substr(2));
-    if(pattern.back() == '*')
+    // foo*
+    if(pattern.back() == '*' && star_count == 1)
         return str.starts_with(pattern.substr(0, pattern.size() - 1));
     
-    // Else * must be in the middle
+    // Now * must be in the middle.
     auto n = pattern.find("*");
-    if(n == std::string_view::npos)
+    if(n != std::string_view::npos && star_count == 1)
+        return str.starts_with(pattern.substr(0, n)) && str.rfind(pattern.substr(n+1)) > n;
+    
+    // Else we convert the pattern to a regex and try to match
+    std::string regex_pattern;
+    for(char ch : pattern) {
+        if(ch == '*')
+            regex_pattern += ".*";
+        else
+            regex_pattern += ch;
+    }
+    try {
+        std::regex re(regex_pattern);
+        std::smatch sm;
+        std::string s(str);
+        return std::regex_match(s, sm, re);
+    }
+    catch(std::regex_error& e) {
         return false;
-    return str.starts_with(pattern.substr(0, n)) && str.rfind(pattern.substr(n+1)) > n;
+    }
 }
 
 bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string>& disallowed_paths)
