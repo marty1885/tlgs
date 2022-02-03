@@ -174,6 +174,9 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
             // XXX: Failed to handshake with the host. We should retry later
             // Shoud we cache the result as no policy is available?
             // policy_cache[cache_key] = {};
+            std::string error = e.what();
+            if(error == "Timeout" || error == "NetworkFailure")
+                host_down_count_[url.hostWithPort(1965)]++;
             co_return true;
         }
 
