@@ -767,10 +767,10 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
 
     auto resp = HttpResponse::newHttpResponse();
     if(page != 1)
-        resp->addHeader("meta", search_path+"/"+std::to_string(page)+"?"+search_term);
+        resp->addHeader("location", search_path+"/"+std::to_string(page)+"?"+search_term);
     else
-        resp->addHeader("meta", search_path+"?"+search_term);
-    resp->setStatusCode((HttpStatusCode)30);
+        resp->addHeader("location", search_path+"?"+search_term);
+    resp->setStatusCode(k307TemporaryRedirect);
     co_return resp;
 }
 
