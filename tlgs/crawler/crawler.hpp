@@ -110,7 +110,7 @@ protected:
     Task<void> crawlPage(const std::string& url_str);
 
     EventLoop* loop_;
-    tbb::concurrent_unordered_map<std::string, size_t> host_down_count_;
+    tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
     tbb::concurrent_queue<std::string> craw_queue_;
     size_t max_concurrent_connections_ = 1;
     std::atomic<size_t> ongoing_crawlings_ = 0;

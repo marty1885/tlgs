@@ -181,6 +181,7 @@ Url& Url::normalize()
     cache_.clear();
     std::transform(protocol_.begin(), protocol_.end(), protocol_.begin(), ::tolower);
     path_ = std::filesystem::path(path_).lexically_normal().generic_string();
+    std::transform(host_.begin(), host_.end(), host_.begin(), ::tolower);
     return *this;
 }
 

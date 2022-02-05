@@ -84,7 +84,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
                 auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
                     "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                     "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                    "LIMIT 120) RETURNING url");
+                    "LIMIT 360) RETURNING url");
                 if(urls.size() == 0)
                     co_return {};
                 
@@ -141,8 +141,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         co_return false;
     // Do not crawl hosts known to be down
     // TODO: Put this on SQL
-    auto timeout = host_down_count_.find(url.hostWithPort(1965));
-    if(timeout != host_down_count_.end() && timeout->second > 3)
+    auto timeout = host_timeout_count_.find(url.hostWithPort(1965));
+    if(timeout != host_timeout_count_.end() && timeout->second > 3)
         co_return false;
 
     // TODO: Use a LRU cache
@@ -176,7 +176,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
             // policy_cache[cache_key] = {};
             std::string error = e.what();
             if(error == "Timeout" || error == "NetworkFailure")
-                host_down_count_[url.hostWithPort(1965)]++;
+                host_timeout_count_[url.hostWithPort(1965)]++;
             co_return true;
         }
 
@@ -227,7 +227,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
         can_crawl = co_await shouldCrawl(next_url.value());
         if(can_crawl == false) {
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
-                , next_url.value(), 0, std::string("blocked by robots"));
+                , next_url.value(), 0, std::string("blocked"));
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
                 , next_url.value());
         }
@@ -277,7 +277,7 @@ void GeminiCrawler::dispatchCrawl()
 
         try {
             co_await crawlPage(url_str.value());
-            LOG_INFO << "Crawled " << url_str.value();
+            LOG_INFO << "Processed " << url_str.value();
         }
         catch(std::exception& e) {
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
@@ -292,8 +292,12 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     const auto url = tlgs::Url(url_str);
     LOG_TRACE << "Crawling: " << url_str;
     if(url.str() != url_str) {
-        LOG_WARN << "Warning: URL " << url_str << " is not normalized";
+        // It's fine we delete unnormalized URLs since the crawler will just add them back later when encounter it again
+        LOG_WARN << "Warning: URL " << url_str << " is not normalized. Removing it from the queue.";
+        co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1", url_str);
+        co_return;
     }
+
     std::string error;
     bool failed = false;
     try {
@@ -488,6 +492,6 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             , url.str());
         
         if(error == "Timeout" || error == "NetworkFailure")
-            host_down_count_[url.hostWithPort(1965)]++;
+            host_timeout_count_[url.hostWithPort(1965)]++;
     }
 }
