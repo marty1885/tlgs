@@ -15,7 +15,7 @@ using namespace trantor;
 
 int main(int argc, char** argv)
 {
-    trantor::Logger::setLogLevel(trantor::Logger::LogLevel::kInfo);
+    trantor::Logger::setLogLevel(trantor::Logger::LogLevel::kTrace);
     CLI::App cli{"TLGS crawler"};
 
     std::string seed_link_file;

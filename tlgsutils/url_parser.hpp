@@ -45,6 +45,33 @@ struct Url
 
     static int protocolDefaultPort(const std::string_view& proto);
 
+    bool operator==(const Url& other) const
+    {
+        return protocol_ == other.protocol_
+            && host_ == other.host_
+            && path_ == other.path_
+            && param_ == other.param_
+            && fragment_ == other.fragment_
+            && port_ == other.port_;
+    }
+
+    bool operator<(const Url& other) const
+    {
+        if(protocol_ != other.protocol_)
+            return protocol_ < other.protocol_;
+        if(host_ != other.host_)
+            return host_ < other.host_;
+        if(path_ != other.path_)
+            return path_ < other.path_;
+        if(param_ != other.param_)
+            return param_ < other.param_;
+        if(fragment_ != other.fragment_)
+            return fragment_ < other.fragment_;
+        if(port_ != other.port_)
+            return port_ < other.port_;
+        return false;
+    }
+
 protected:
     std::string protocol_;
     std::string host_;

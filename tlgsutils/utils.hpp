@@ -1,4 +1,5 @@
 #include <string>
+#include <vector>
 #include "url_parser.hpp"
 
 namespace tlgs
@@ -42,4 +43,23 @@ bool isNonUriAction(const std::string& sv);
  * @return std::string hex encoded hash
  */
 std::string xxHash64(const std::string_view str);
+
+template <typename T, typename Func>
+std::vector<typename T::value_type> filter(const T& data, Func&& func)
+{
+    std::vector<typename T::value_type> ret;
+    std::copy_if(data.begin(), data.end(), std::back_inserter(ret), std::forward<Func>(func));
+    return ret;
+}
+
+template <typename T, typename Func>
+auto map(const T& data, Func&& func)
+{
+    using func_ret_type = decltype(func(data.front()));
+    std::vector<func_ret_type> ret;
+    ret.resize(data.size());
+    std::transform(data.begin(), data.end(), std::back_inserter(ret), std::forward<Func>(func));
+    return ret;
+}
+
 } // namespace tlgs

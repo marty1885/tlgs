@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <random>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp> 
 
@@ -10,7 +11,6 @@
 #include <drogon/utils/Utilities.h>
 #include <drogon/utils/coroutine.h>
 
-#include <stdexcept>
 #include <tlgsutils/gemini_parser.hpp>
 #include <tlgsutils/robots_txt_parser.hpp>
 #include <tlgsutils/url_parser.hpp>
@@ -23,10 +23,23 @@
 #include "iconv.hpp"
 #include "blacklist.hpp"
 
+#include <fmt/core.h>
+
 using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
+static std::string mySQLRealEscape(std::string str)
+{
+    drogon::utils::replaceAll(str, "\\", "\\\\");
+    drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
+    drogon::utils::replaceAll(str, "\n", "\\n");
+    drogon::utils::replaceAll(str, "\r", "\\r");
+    drogon::utils::replaceAll(str, "'", "\\'");
+    drogon::utils::replaceAll(str, "\"", "\\\"");
+    drogon::utils::replaceAll(str, "\x1a", "\\Z");
+    return str;
+}
 
 static std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
 {
@@ -396,10 +409,19 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         if(last_non_space != 0 && last_non_space != std::string::npos)
             title.resize(last_non_space + 1);
 
-        // TODO: Avoid parsing links when the content doesn't change
-        std::set<std::string> cross_site_links;
-        std::set<std::string> internal_links;
+        auto new_indexed_content_hash = tlgs::xxHash64(body);
+        // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
+        if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
+            // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
+                "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
+                url.str(), status, meta, mime);
+                co_return;
+        }
+
+        std::set<tlgs::Url> link_urls;
         for(const auto& link : links) {
+            // ignore links like mailto: ldap:. etc..
             if(tlgs::isNonUriAction(link))
                 continue;
 
@@ -417,23 +439,22 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
             if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
                 link_url.withParam("");
-
-            bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
-            if(is_cross_site)
-                cross_site_links.insert(link_url.str());
-            else
-                internal_links.insert(link_url.str());
+            link_urls.insert(std::move(link_url));
         }
 
-        auto new_indexed_content_hash = tlgs::xxHash64(body);
-        // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
-        if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
-            // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
-            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
-                "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
-                url.str(), status, meta, mime);
-                co_return;
-        }
+        // TODO: Use C++20 ranges. My basic implementation is not as efficent as it could be.
+        auto cross_site_links = tlgs::map(tlgs::filter(link_urls, [&url](const tlgs::Url& link_url) {
+                return link_url.host() != url.host() || url.port() != link_url.port();
+            })
+            , [](const tlgs::Url& link_url) {
+                return link_url.str();
+            });
+        auto internal_links = tlgs::map(tlgs::filter(link_urls, [&url](const tlgs::Url& link_url) {
+                return !(link_url.host() != url.host() || url.port() != link_url.port());
+            })
+            , [](const tlgs::Url& link_url) {
+                return link_url.str();
+            });
 
         // TODO: Guess the language of the content. Then index them with different parsers
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
@@ -442,35 +463,36 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
             , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash);
 
+        // Full text index update
         co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ') || content_body), "
             "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
             "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
+        if(internal_links.size() == 0 && cross_site_links.size() == 0)
+            co_return;
+
+        // Update link formation
+        // XXX: Drogon does not support bulk insert API. We have to do with string concatenation (with proper escaping)
+        std::string link_query = "INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) VALUES ";
+        std::string page_query = "INSERT INTO pages (url, domain_name, port, first_seen_at) VALUES ";
+        size_t page_count = 0;
+        for(const auto& link_url : link_urls) {
+            bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
+
+            link_query += fmt::format("('{}', '{}', {}, '{}', {}, '{}', {}), ",
+                mySQLRealEscape(url.str()), mySQLRealEscape(url.host()), url.port(), mySQLRealEscape(link_url.str()),
+                is_cross_site, mySQLRealEscape(link_url.host()), link_url.port());
+
+            if(co_await shouldCrawl(link_url.str()) == false)
+                continue;
+            page_query += fmt::format("('{}', '{}', {}, CURRENT_TIMESTAMP), ",
+                mySQLRealEscape(link_url.str()), mySQLRealEscape(link_url.host()), link_url.port());
+            page_count++;
+        }
 
         co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
-        for(const auto& link : internal_links) {
-            tlgs::Url link_url(link);
-            co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7);"
-                , url.str(), url.host(), url.port(), link_url.str(), false, link_url.host(), link_url.port());
-
-            if(co_await shouldCrawl(link_url.str()) == false)
-                continue;
-            co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
-                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
-                link_url.str(), link_url.host(), link_url.port());
-        }
-        for(const auto& link : cross_site_links) {
-            tlgs::Url link_url(link);
-            co_await db->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7);"
-                , url.str(), url.host(), url.port(), link_url.str(), true, link_url.host(), link_url.port());
-
-            if(co_await shouldCrawl(link_url.str()) == false)
-                continue;
-            co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
-                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
-                link_url.str(), link_url.host(), link_url.port());
-        }
+        co_await db->execSqlCoro(link_query.substr(0, link_query.size() - 2) + " ON CONFLICT DO NOTHING;");
+        if(page_count != 0)
+            co_await db->execSqlCoro(page_query.substr(0, page_query.size() - 2) + " ON CONFLICT DO NOTHING;");
     }
     catch(std::exception& e) {
         LOG_ERROR << "Failed to crawl " << url_str << ". Error: " << e.what();

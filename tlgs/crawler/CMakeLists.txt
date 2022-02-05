@@ -1,6 +1,7 @@
 add_executable(tlgs_crawler main.cpp blacklist.cpp crawler.cpp)
 target_compile_features(tlgs_crawler PRIVATE cxx_std_20)
 find_package(Iconv REQUIRED)
-target_link_libraries(tlgs_crawler PRIVATE Drogon::Drogon Iconv::Iconv dremini tlgsutils tbb)
+find_package(fmt REQUIRED)
+target_link_libraries(tlgs_crawler PRIVATE Drogon::Drogon Iconv::Iconv dremini tlgsutils tbb fmt::fmt)
 target_precompile_headers(tlgs_crawler PRIVATE pch.h)
 install(TARGETS tlgs_crawler RUNTIME DESTINATION bin)
