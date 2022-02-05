@@ -129,15 +129,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         LOG_ERROR << url_str << " is not a Gemini URL";
         co_return false;
     }
-    // hardcoeded: don't crawl from localhost or uneeded files
-    if(url.path() == "/robots.txt" || url.path() == "/favicon.txt")
-        co_return false;
-    if(url.host().starts_with("127.0.0.") || url.host() == "[::1]" || url.host() == "localhost")
-        co_return false;
     if(inBlacklist(url.str()))
-        co_return false;
-    // We don't have the ablity crawl hidden sites, yet
-    if(url.host().ends_with(".onion"))
         co_return false;
     // Do not crawl hosts known to be down
     // TODO: Put this on SQL
@@ -157,7 +149,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         co_return !tlgs::isPathBlocked(url.path(), it->second);
     }
     LOG_TRACE << "Cannot find " << cache_key << " in local policy cache";
-    
+
     auto db = app().getDbClient();
     auto policy_status = co_await db->execSqlCoro("SELECT have_policy FROM robot_policies_status "
         "WHERE host = $1 AND port = $2 AND last_crawled_at > CURRENT_TIMESTAMP - INTERVAL '7' DAY", url.host(), url.port());
@@ -295,6 +287,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         // It's fine we delete unnormalized URLs since the crawler will just add them back later when encounter it again
         LOG_WARN << "Warning: URL " << url_str << " is not normalized. Removing it from the queue.";
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1", url_str);
+        co_await db->execSqlCoro("DELETE FROM links WHERE url = $1 OR to_url = $1", url_str);
         co_return;
     }
 

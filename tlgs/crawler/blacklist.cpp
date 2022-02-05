@@ -20,10 +20,14 @@ bool inBlacklist(const std::string& url_str)
         "example.eu",
         "example.gov",
         "example.space",
-        "gus.guru", // GUS no longer exists
-        "ftrv.se", // Blocked me when developing the search engine. Waisting my time on timeout
-        "gmi.bacardi55.io", // No longer exists
-        "clemat.is", // No longer exists
+        // localhosts, 127.0.0.x is handled separately
+        "localhost",
+        "[::1]"
+        // Known sites to be down and won't be back
+        "gus.guru",
+        "ftrv.se",
+        "gmi.bacardi55.io",
+        "clemat.is",
         "nanako.mooo.com",
         "gluonspace.com",
         "lord.re",
@@ -249,6 +253,13 @@ bool inBlacklist(const std::string& url_str)
     if(blacklist_trie.containsPrefixOf(url.str()))
         return true;
 
+    // hardcoeded: don't crawl from localhost or uneeded files
+    if(url.path() == "/robots.txt" || url.path() == "/favicon.txt")
+        return true;
+    // The entire 127.0.0.1/24 subnet
+    if(url.host().starts_with("127.0.0."))
+        return true;
+
     // Ignore all potential git repos
     if(url.str().starts_with("/git/"))
         return true;
@@ -258,6 +269,10 @@ bool inBlacklist(const std::string& url_str)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
+    
+    // We don't have the ablity crawl hidden sites, yet
+    if(url.host().ends_with(".onion"))
+        return false;
 
     // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
