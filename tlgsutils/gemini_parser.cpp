@@ -29,9 +29,14 @@ GeminiDocument extractGeminiConcise(const std::string_view sv)
     // TODO: Optimize the function
     GeminiDocument doc;
     auto nodes = dremini::parseGemini(sv);
+    bool first_content = true;
     for(const auto& node : nodes) {
         // Avoid indexing ASCII art. This may remove code blocks. But it shoudn't matter
         if(node.type == "preformatted_text") {
+            // Usually if a preformatted text block is the first content, it's ASCII art
+            if(first_content)
+                continue;
+
             std::string meta = node.meta;
             // common text in the meta field that contains ASCII art
             std::transform(meta.begin(), meta.end(), meta.begin(), ::tolower);
@@ -54,6 +59,8 @@ GeminiDocument extractGeminiConcise(const std::string_view sv)
         }
         // Avoid paragraph seperators
         else if(node.type == "text" && !node.text.empty()){
+            first_content = false;
+
             char first = node.text[0];
             bool is_all_same = node.text.find_first_not_of(first) == std::string::npos;
             if(is_all_same)

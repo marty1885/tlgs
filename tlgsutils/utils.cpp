@@ -105,12 +105,16 @@ tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
 
 bool tlgs::isNonUriAction(const std::string& str)
 {
-    const static std::regex re("[^\\/]+:[^\\/]+");
-    std::smatch sm;
-    // Ignore links like mailto:joe@example.com 
-    if(std::regex_match(str, sm, re))
-        return true;
-    return false;
+    // detects if the string is of the form [scheme]:[other_stuff]
+    size_t n = str.find("://");
+    if(n != std::string::npos)
+        return false;
+    n = str.find(":");
+    for(size_t i = 0; i < n; i++) {
+        if(isalpha(str[i]) == false)
+            return false;
+    }
+    return true;
 }
 
 std::string tlgs::xxHash64(const std::string_view str)
