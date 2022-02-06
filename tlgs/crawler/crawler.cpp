@@ -416,7 +416,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                 "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
                 url.str(), status, meta, mime);
-                co_return;
+            co_return;
         }
 
         std::set<tlgs::Url> link_urls;

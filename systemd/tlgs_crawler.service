@@ -8,6 +8,7 @@ Restart=always
 RestartSec=1
 StartLimitBurst=5
 StartLimitIntervalSec=10
+WorkingDirectory=/tmp/
 User=tlgs
 ExecStart=/usr/bin/tlgs_crawler /etc/tlgs/config.json -c 4
 
