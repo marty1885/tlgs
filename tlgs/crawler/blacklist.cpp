@@ -261,7 +261,7 @@ bool inBlacklist(const std::string& url_str)
         return true;
 
     // Ignore all potential git repos
-    if(url.str().starts_with("/git/"))
+    if(url.path().starts_with("/git/"))
         return true;
     if(url.host().starts_with("git."))
         return true;
@@ -272,7 +272,7 @@ bool inBlacklist(const std::string& url_str)
     
     // We don't have the ablity crawl hidden sites, yet
     if(url.host().ends_with(".onion"))
-        return false;
+        return true;
 
     // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
@@ -292,8 +292,5 @@ bool inBlacklist(const std::string& url_str)
             return true;
     }
 
-    // No to all antenna API endpoints
-    if(url.path().find("~antenna/filter/") != std::string::npos)
-        return false;
     return false;
 }
