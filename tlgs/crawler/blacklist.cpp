@@ -236,6 +236,7 @@ bool inBlacklist(const std::string& url_str)
         // Text based game
         "gemini://gthudson.xyz/cgi-bin/quietplace.cgi",
         "gemini://futagoza.gamiri.com/gmninkle/",
+        "gemini://alexey.shpakovsky.ru/maze",
 
         // Timeout but doesn't actually trigger timeout
         "gemini://202x.moe/resonance"

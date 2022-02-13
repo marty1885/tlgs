@@ -4,7 +4,7 @@
 
 At last the crawler can finish without performance degradation and attendence. From now on crawling will happen automatically every Wednesday and Sunday 00:00 UTC.
 
-Also security update. Due to some weird firewall logs. Which I suspect are bots poking around, but anyways. TLGS server now runs on GrapheneOS's hardened_malloc and with much less privilege. I think my code is secure. But better safe than sorry. (Man, I'd love to have unveil and pledge on Linux).
+Also security update. Due to some weird firewall logs. Which I suspect are simply bots poking around, but anyways. TLGS server now runs on GrapheneOS's hardened_malloc and with much less privilege. I think my code is secure. But better safe than sorry. (Man, I'd love to have unveil and pledge on Linux).
 
 ### 2022-2-2
 
