@@ -10,7 +10,7 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
     std::set<std::string> disallowed_path; 
     std::stringstream ss;
     ss << str;
-    static const std::regex line_re(R"((.*):[ \t](.*))");
+    static const std::regex line_re(R"((.*):[ \t]*(.*))");
     std::smatch match;
     std::string line;
     bool care = false;
