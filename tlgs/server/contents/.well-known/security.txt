@@ -1,0 +1,4 @@
+Contact: marty1885@protonmail.com
+Expires: Tue, 5 Mar 2024 00:00 +0800
+Encryption: https://clehaxze.tw/misc/gpg_public.txt
+Preferred-Languages: en, zh-TW, eo
