@@ -120,3 +120,8 @@ bool tlgs::isPathBlocked(const std::string& path, const std::vector<std::string>
     }
     return false;
 }
+
+bool tlgs::isPathBlocked(const std::string& path, const std::string& disallowed_path)
+{
+    return wildcardPathMatch(disallowed_path, path);
+}

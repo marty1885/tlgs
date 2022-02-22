@@ -4,7 +4,7 @@
 #include <regex>
 #include <mutex>
 #include <tlgsutils/url_parser.hpp>
-#include <tlgsutils/trie.hpp>
+#include <tlgsutils/url_blacklist.hpp>
 
 bool inBlacklist(const std::string& url_str)
 {
@@ -22,7 +22,7 @@ bool inBlacklist(const std::string& url_str)
         "example.space",
         // localhosts, 127.0.0.x is handled separately
         "localhost",
-        "[::1]"
+        "[::1]",
         // Known sites to be down and won't be back
         "gus.guru",
         "ftrv.se",
@@ -242,16 +242,16 @@ bool inBlacklist(const std::string& url_str)
         "gemini://202x.moe/resonance"
     };
 
-    static tlgs::trie_map<char, tlgs::SetCounter> blacklist_trie;
+    static tlgs::UrlBlacklist blacklist;
     static std::once_flag blacklist_init;
     std::call_once(blacklist_init, [&]() {
         for (auto& url : blacklist_urls)
-            blacklist_trie.insert(url);
+            blacklist.add(url);
     });
     // If the domain or URL is blacklisted, we don't want to index it
     if(blacklist_domains.count(url.host()) != 0)
         return true;
-    if(blacklist_trie.containsPrefixOf(url.str()))
+    if(blacklist.isBlocked(url.str()))
         return true;
 
     // hardcoeded: don't crawl from localhost or uneeded files
