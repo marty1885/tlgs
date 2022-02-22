@@ -192,6 +192,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://ecs.d2evs.net/proxy/",
         "gemini://gmi.si3t.ch/www-gem/",
         "gemini://orrg.clttr.info/orrg.pl",
+        "gemini://mysidard.com/services/hackernews/",
 
         // killing crawl, I think maybe because it's too big
         // cryptocurrency bullshit
