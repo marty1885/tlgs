@@ -310,7 +310,7 @@ void GeminiCrawler::dispatchCrawl()
             }
         }
 
-        while(page_processed) {
+        while(wait_for_close) {
             co_await sleepCoro(loop_, 0.1);
             if(master)
                 wait_for_close = countOpenFds() > 8000;
