@@ -83,6 +83,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://houston.coder.town/search?",
         "gemini://houston.coder.town/search/",
         "gemini://marginalia.nu/search",
+        "gemini://kennedy.gemi.dev/cached?",
 
         // Geddit
         "gemini://geddit.pitr.ca/post?",
