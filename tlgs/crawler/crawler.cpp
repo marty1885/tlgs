@@ -295,13 +295,17 @@ void GeminiCrawler::dispatchCrawl()
 
     async_run([counter, this]() mutable -> Task<void> {
 #ifdef __linux__
-        // HACK: Sometimes this crawler opens way too many file descriptors and leave them in the CLOSE_WAIT state. We try to find
-        // how many fds we have opened. Then wait for them to close before we keep crawling again. This might be a bug in trantor
-        // since Gemini is a really simple protocol. We souldn't be too slow to react causing CLOSE_WAIT to happen.
+        // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
+        // many sockets we have opened. Then wait for them to close before we keep crawling again.
         bool master = false;
-        if((++page_processed) % 256 == 0) {
+        constexpr int max_sockets = 1024; // common max sockets on Linux
+        constexpr int check_period = 256;
+        constexpr int wait_size = max_sockets - check_period + 30; // random small value to aux use
+        static_assert(wait_size > 0);
+        static_assert(max_sockets > check_period);
+        if((++page_processed) % check_period == 0) {
             int n = countOpenSockets();
-            if(n > 800) {
+            if(n > wait_size) {
                 LOG_INFO << "Start waiting for sockets to close";
                 wait_for_close = true;
                 master = true;
@@ -311,7 +315,7 @@ void GeminiCrawler::dispatchCrawl()
         while(wait_for_close) {
             co_await sleepCoro(loop_, 0.1);
             if(master)
-                wait_for_close = countOpenSockets() > 800;
+                wait_for_close = countOpenSockets() >= wait_size;
         }
 #endif
         auto url_str = co_await getNextCrawlPage();
