@@ -31,23 +31,21 @@ using namespace trantor;
 
 #ifdef __linux__
 
+#include <filesystem>
+
 #include <dirent.h>
 #include <stddef.h>
 #include <sys/types.h>
 
-int countOpenFds()
+size_t countOpenSockets()
 {
-    DIR *dp = opendir("/proc/self/fd");
-    struct dirent *de;
-    int count = -3; // '.', '..', dp
-
-    if (dp == NULL)
-        return -1;
-
-    while ((de = readdir(dp)) != NULL)
-        count++;
-
-    (void)closedir(dp);
+    namespace fs = std::filesystem;
+    size_t count = 0;
+    for(const auto& fd : fs::directory_iterator(fs::path("/proc/self/fd/"))) {
+        if(std::filesystem::is_symlink(fd)
+            && std::filesystem::read_symlink(fd).generic_string().starts_with("socket:["))
+                count++;
+    }
 
     return count;
 }
@@ -301,9 +299,9 @@ void GeminiCrawler::dispatchCrawl()
         // how many fds we have opened. Then wait for them to close before we keep crawling again. This might be a bug in trantor
         // since Gemini is a really simple protocol. We souldn't be too slow to react causing CLOSE_WAIT to happen.
         bool master = false;
-        if((++page_processed) % 2048 == 0) {
-            int n = countOpenFds();
-            if(n > 10000) {
+        if((++page_processed) % 256 == 0) {
+            int n = countOpenSockets();
+            if(n > 800) {
                 LOG_INFO << "Start waiting for sockets to close";
                 wait_for_close = true;
                 master = true;
@@ -313,7 +311,7 @@ void GeminiCrawler::dispatchCrawl()
         while(wait_for_close) {
             co_await sleepCoro(loop_, 0.1);
             if(master)
-                wait_for_close = countOpenFds() > 8000;
+                wait_for_close = countOpenSockets() > 800;
         }
 #endif
         auto url_str = co_await getNextCrawlPage();
