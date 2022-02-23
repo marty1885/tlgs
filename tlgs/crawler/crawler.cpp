@@ -29,6 +29,30 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
+#ifdef __linux__
+
+#include <dirent.h>
+#include <stddef.h>
+#include <sys/types.h>
+
+int countOpenFds()
+{
+    DIR *dp = opendir("/proc/self/fd");
+    struct dirent *de;
+    int count = -3; // '.', '..', dp
+
+    if (dp == NULL)
+        return -1;
+
+    while ((de = readdir(dp)) != NULL)
+        count++;
+
+    (void)closedir(dp);
+
+    return count;
+}
+#endif
+
 static std::string mySQLRealEscape(std::string str)
 {
     drogon::utils::replaceAll(str, "\\", "\\\\");
@@ -247,6 +271,10 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
     co_return url.str();
 }
 
+#ifdef __linux__
+static std::atomic<size_t> page_processed = 0;
+static std::atomic<bool> wait_for_close;
+#endif
 void GeminiCrawler::dispatchCrawl()
 {
     if(ended_)
@@ -268,6 +296,26 @@ void GeminiCrawler::dispatchCrawl()
         return;
 
     async_run([counter, this]() mutable -> Task<void> {
+#ifdef __linux__
+        // HACK: Sometimes this crawler opens way too many file descriptors and leave them in the CLOSE_WAIT state. We try to find
+        // how many fds we have opened. Then wait for them to close before we keep crawling again. This might be a bug in trantor
+        // since Gemini is a really simple protocol. We souldn't be too slow to react causing CLOSE_WAIT to happen.
+        bool master = false;
+        if((++page_processed) % 2048 == 0) {
+            int n = countOpenFds();
+            if(n > 10000) {
+                LOG_INFO << "Start waiting for sockets to close";
+                wait_for_close = true;
+                master = true;
+            }
+        }
+
+        while(page_processed) {
+            co_await sleepCoro(loop_, 0.1);
+            if(master)
+                wait_for_close = countOpenFds() > 8000;
+        }
+#endif
         auto url_str = co_await getNextCrawlPage();
         // Crawling has ended if the following is true
         // 1. There's no more URL to crawl
