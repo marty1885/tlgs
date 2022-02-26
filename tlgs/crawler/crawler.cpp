@@ -298,11 +298,11 @@ void GeminiCrawler::dispatchCrawl()
         // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
         // many sockets we have opened. Then wait for them to close before we keep crawling again.
         bool master = false;
-        constexpr int max_sockets = 900; // less than common max sockets on Linux
-        constexpr int check_period = 256;
-        constexpr int wait_size = max_sockets - check_period + 30; // random small value to aux use
+        constexpr int max_sockets = 850; // less than common max sockets on Linux
+        constexpr int check_period = 64;
+        constexpr int retract_count = 256;
+        constexpr int wait_size = max_sockets - check_period - retract_count;
         static_assert(wait_size > 0);
-        static_assert(max_sockets > check_period);
         if((++page_processed) % check_period == 0) {
             int n = countOpenSockets();
             if(n > wait_size) {
