@@ -695,8 +695,8 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         // without loosing too much accuracy
         auto db = app().getDbClient();
         auto page_data = co_await db->execSqlCoro("SELECT url, size, title, content_type, "
-            "ts_headline(SUBSTRING(content_body, 0, 5000), plainto_tsquery($1), 'StartSel=\"\", "
-                "StopSel=\"\", MinWords=23, MaxWords=37, MaxFragments=1, FragmentDelimiter=\" ... \"') AS preview, "
+            "ts_headline(SUBSTRING(content_body, 0, 5000), plainto_tsquery($1), 'StartSel=\"[\", "
+                "StopSel=\"]\", MinWords=23, MaxWords=37, MaxFragments=1, FragmentDelimiter=\" ... \"') AS preview, "
             "last_crawl_success_at FROM pages WHERE url IN ("+url_array+");", query_str);
 
         std::unordered_map<std::string, size_t> result_idx;
