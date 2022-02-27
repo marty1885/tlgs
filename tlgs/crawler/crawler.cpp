@@ -305,7 +305,7 @@ void GeminiCrawler::dispatchCrawl()
         static_assert(wait_size > 0);
         if((++page_processed) % check_period == 0) {
             int n = countOpenSockets();
-            if(n > wait_size) {
+            if(n > max_sockets) {
                 LOG_INFO << "Start waiting for sockets to close";
                 wait_for_close = true;
                 master = true;
@@ -313,7 +313,7 @@ void GeminiCrawler::dispatchCrawl()
         }
 
         while(wait_for_close) {
-            co_await sleepCoro(loop_, 0.1);
+            co_await sleepCoro(loop_, 0.05);
             if(master)
                 wait_for_close = countOpenSockets() >= wait_size;
         }
