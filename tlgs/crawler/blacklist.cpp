@@ -244,7 +244,11 @@ bool inBlacklist(const std::string& url_str)
         "gemini://gemini.theuse.net/textfiles.com",
 
         // Timeout but doesn't actually trigger timeout
-        "gemini://202x.moe/resonance"
+        "gemini://202x.moe/resonance",
+
+        // Redirection + some infinate recursion somewhere
+        "gemini://gmi.skyjake.fi/",
+        "gemini://warmedal.se/.well-known/",
     };
 
     static tlgs::UrlBlacklist blacklist;
