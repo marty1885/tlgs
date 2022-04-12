@@ -228,6 +228,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://iceworks.cc/z/",
         "gemini://ake.crabdance.com:1966/channel/",
         "gemini://gemini.autonomy.earth/posts/",
+        "gemini://lists.flounder.online/gemini/threads/messages/",
 
         // scripts?
         "gemini://warmedal.se/~antenna",
@@ -249,6 +250,9 @@ bool inBlacklist(const std::string& url_str)
         // Redirection + some infinate recursion somewhere
         "gemini://gmi.skyjake.fi/",
         "gemini://warmedal.se/.well-known/",
+
+        // Non standard conforming robots.txt
+        "gemini://bonequest.com/",
     };
 
     static tlgs::UrlBlacklist blacklist;
