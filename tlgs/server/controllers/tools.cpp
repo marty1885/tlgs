@@ -71,6 +71,8 @@ Task<HttpResponsePtr> ToolsController::known_hosts(HttpRequestPtr req)
         for(const auto& host : known_hosts) {
             auto host_name = host["domain_name"].as<std::string>();
             auto port = host["port"].as<int>();
+            if(tlgs::Url(host_name).good() == false)
+                continue;
             hosts->push_back(tlgs::Url("gemini://"+host_name+":"+std::to_string(port)+"/").str());
         }
         cache.insert("hosts", hosts, 3600*8);
