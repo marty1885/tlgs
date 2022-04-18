@@ -37,6 +37,10 @@ Url::Url(const std::string& str, bool normalize_url)
     sv = sv.substr(idx+3);
     idx = sv.find_first_of(":/");
     host_ = sv.substr(0, idx);
+    if(host_.empty() || host_[0] == '.') {
+        good_ = false;
+        return;
+    }
     if(idx == std::string::npos) {
         path_ = "/";
         if(normalize_url)
