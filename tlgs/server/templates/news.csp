@@ -2,7 +2,7 @@
 
 ### 2022-4-22
 
-Just a headsup. The server will be upgraded to Ubuntu 22.04 sometime next week or the week after. Expect a few hours of downtime. Things should be back to normal after that. Also I'm planning to migrate to OpenBSD once then adopted clang-14 for better security.
+Just a headsup. The server will be upgraded to Ubuntu 22.04 sometime next week or the week after. Expect a few hours of downtime. Things should be back to normal after that. Also I'm planning to migrate to OpenBSD for better security once they adopted clang-14.
 
 ### 2022-4-16
 
