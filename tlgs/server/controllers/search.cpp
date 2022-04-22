@@ -267,11 +267,14 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
     std::vector<unsigned char> is_auth(node_count);
     size_t num_hubs = 0;
     size_t num_auths = 0;
+    // Find the hubs and auths in the network. According to the SALSA paper, hubs are noes with more outbound links than inbound links.
     for(size_t i = 0; i < node_count; ++i) {
         is_auth[i] = in_neighbous[i].size() > out_neighbous[i].size();
         num_hubs += !is_auth[i];
         num_auths += is_auth[i];
     }
+    // Turn the network into a biparte graph. For performance, we swap the link to be removed with the last link in the vector.
+    // Then resize the vector at the very end.
     for(size_t i = 0; i < node_count; ++i) {
         size_t size = in_neighbous[i].size();
         for(size_t j = 0; j < size ; ++j) {
@@ -307,7 +310,8 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
     for(size_t i=0;i<node_count;i++)
         score[i] = 1.0 / (is_auth[i] ? num_auths : num_hubs);
 
-    // The SALSA algorithm
+    // The SALSA ranking algorithm
+    // Reference implementation: https://docs.oracle.com/cd/E56133_01/latest/reference/analytics/algorithms/salsa.html
     size_t salsa_iter = 0;
     std::vector<float> local_in_score(node_count);
     std::vector<float> local_out_score(node_count);
