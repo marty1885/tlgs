@@ -1,3 +1,6 @@
 [submodule "thrid_party/dremini"]
 	path = thrid_party/dremini
 	url = https://github.com/marty1885/dremini
+[submodule "thrid_party/landlock-unveil"]
+	path = thrid_party/landlock-unveil
+	url = https://github.com/marty1885/landlock-unveil

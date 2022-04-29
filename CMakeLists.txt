@@ -15,6 +15,11 @@ endif()
 
 set(DREMINI_BUILD_EXAMPLES OFF)
 set(DREMINI_BUILD_TEST OFF)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_subdirectory(thrid_party/landlock-unveil)
+    include_directories(thrid_party/landlock-unveil)
+endif()
 add_subdirectory(thrid_party/dremini)
 include_directories(thrid_party/dremini)
 

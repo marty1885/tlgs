@@ -2,6 +2,9 @@
 #include <dremini/GeminiServerPlugin.hpp>
 #include <tlgsutils/url_parser.hpp>
 
+#define LLUNVEIL_USE_UNVEIL
+#include <llunveil.h>
+
 #include "search_result.hpp"
 
 #include "CLI/App.hpp"
@@ -83,6 +86,15 @@ int main(int argc, char** argv)
             resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
             callback(resp);
         });
+    
+    app().getLoop()->queueInLoop([](){
+        #if defined(__linux__) || defined(__OpenBSD__)
+        // Lockdown the server to only access the files in the document directory
+        unveil(drogon::app().getDocumentRoot().c_str(), "r");
+        unveil(drogon::app().getUploadPath().c_str(), "rwc");
+        unveil(nullptr, nullptr);
+        #endif
+    });
 
     CLI::App cli{"TLGS server"};
     std::string config_file = "/etc/tlgs/server_config.json";
