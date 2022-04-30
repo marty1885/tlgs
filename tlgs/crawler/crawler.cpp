@@ -357,8 +357,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     try {
         if(co_await shouldCrawl(url.str()) == false)
             throw std::runtime_error("Blocked by robots.txt");
-        auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash , raw_content_hash "
-            "FROM pages WHERE url = $1;", url.str());
+        auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash , raw_content_hash, last_status"
+            ", last_crawled_at FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
         auto indexed_content_hash = have_record ? record[0]["indexed_content_hash"].as<std::string>() : "";
         auto raw_content_hash = have_record ? record[0]["raw_content_hash"].as<std::string>() : "";
@@ -367,6 +367,23 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             co_await db->execSqlCoro("INSERT INTO pages(url, domain_name, port, first_seen_at)"
                 " VALUES ($1, $2, $3, CURRENT_TIMESTAMP);",
                 url.str(), url.host(), url.port());
+        }
+        else {
+            // 53 proxy error. Likely misconfigured proxy/domain or bad links pointing to the wrong domain that is on the 
+            // smae IP. Only retry once every 21 days
+            auto last_status = record[0]["last_status"].isNull() ? 0 : record[0]["last_status"].as<int>();
+            auto last_crawled_at = [&](){
+                auto var = record[0]["last_crawled_at"];
+                if(var.isNull())
+                    return trantor::Date();
+                else
+                    return trantor::Date::fromDbStringLocal(var.as<std::string>());
+            }();
+
+            if(last_status == 53 || last_crawled_at.after(21*7*24*3600) > trantor::Date::now()) {
+                LOG_INFO << "Skipping " << url.str() << " that was proxy-errored recently";
+                co_return;
+            }
         }
 
         // Only fetch the entire page for content types we can handle.
