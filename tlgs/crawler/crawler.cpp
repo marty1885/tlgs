@@ -346,16 +346,14 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
     auto db = app().getDbClient();
     const auto url = tlgs::Url(url_str);
     LOG_TRACE << "Crawling: " << url_str;
-    if(url.str() != url_str) {
+    if(url.good() == false || url.str() != url_str) {
         // It's fine we delete unnormalized URLs since the crawler will just add them back later when encounter it again
-        LOG_WARN << "Warning: URL " << url_str << " is not normalized. Removing it from the queue.";
+        LOG_WARN << "Warning: URL " << url_str << " is not normalized or invalid. Removing it from the queue.";
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1", url_str);
         co_await db->execSqlCoro("DELETE FROM links WHERE url = $1 OR to_url = $1", url_str);
         co_return;
     }
 
-    std::string error;
-    bool failed = false;
     try {
         if(co_await shouldCrawl(url.str()) == false)
             throw std::runtime_error("Blocked by robots.txt");
@@ -480,7 +478,11 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 if(link_url.protocol() != "gemini")
                     continue;
             }
-            else {
+            // sometimes invalid host/port causes the URL to be invalid. Ignore them
+            else if(link.starts_with("gemini://")) {
+                    continue;
+            }
+            else  {
                 link_url = linkCompose(url, link);
             }
             // We shall not send fragments
@@ -545,18 +547,19 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             co_await db->execSqlCoro(page_query.substr(0, page_query.size() - 2) + " ON CONFLICT DO NOTHING;");
     }
     catch(std::exception& e) {
-        LOG_ERROR << "Failed to crawl " << url_str << ". Error: " << e.what();
-        failed = true;
-        error = e.what();
-    }
-
-    if(failed) {
-        co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
-            , url.str(), 0, error);
-        co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
-            , url.str());
-        
+        std::string error = e.what();
         if(error == "Timeout" || error == "NetworkFailure")
-            host_timeout_count_[url.hostWithPort(1965)]++;
+                host_timeout_count_[url.hostWithPort(1965)]++;
+        LOG_ERROR << "Failed to crawl " << url.str() << ". Error: " << error;
+        try {
+            auto db = app().getDbClient();
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
+                , url.str(), 0, error);
+            co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
+                , url.str());
+        }
+        catch(...) {
+            throw;
+        }
     }
 }
