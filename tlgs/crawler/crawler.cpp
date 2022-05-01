@@ -380,7 +380,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     return trantor::Date::fromDbStringLocal(var.as<std::string>());
             }();
 
-            if(last_status == 53 || last_crawled_at.after(21*7*24*3600) > trantor::Date::now()) {
+            if(last_status == 53 && last_crawled_at.after(21*7*24*3600) < trantor::Date::now()) {
                 LOG_INFO << "Skipping " << url.str() << " that was proxy-errored recently";
                 co_return;
             }
