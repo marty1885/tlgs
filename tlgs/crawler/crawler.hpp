@@ -51,8 +51,10 @@ public:
                 break;
 
             // HACK: Sometimes ended_ is not set. Workaround when we see 5 conseqitive 0 crawlings 
-            if(ongoing_crawlings_ == 0)
+            if(ongoing_crawlings_ == 0) {
                 finish_count ++;
+                loop_->queueInLoop([this] {dispatchCrawl();});
+            }
             else
                 finish_count = 0;
             if(finish_count == 5) {
