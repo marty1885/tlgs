@@ -210,7 +210,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         assert(resp != nullptr);
         auto [mime, _] = parseMime(resp->contentTypeString());
         int status = std::stoi(resp->getHeader("gemini-status"));
-        bool have_robots_txt = status == 20 && mime == "text/plain";
+        // HACK: Some capsules have broken MIME
+        bool have_robots_txt = status == 20 && (mime == "text/plain" || mine == "text/gemini");
         if(have_robots_txt) {
             disallowed_path = tlgs::parseRobotsTxt(std::string(resp->body()), {"*", "tlgs", "indexer"});
             have_robots_txt = true;
