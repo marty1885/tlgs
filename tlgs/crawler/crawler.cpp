@@ -211,7 +211,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         auto [mime, _] = parseMime(resp->contentTypeString());
         int status = std::stoi(resp->getHeader("gemini-status"));
         // HACK: Some capsules have broken MIME
-        bool have_robots_txt = status == 20 && (mime == "text/plain" || mine == "text/gemini");
+        bool have_robots_txt = status == 20 && (mime == "text/plain" || mime == "text/gemini");
         if(have_robots_txt) {
             disallowed_path = tlgs::parseRobotsTxt(std::string(resp->body()), {"*", "tlgs", "indexer"});
             have_robots_txt = true;
