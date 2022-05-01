@@ -87,12 +87,12 @@ Task<> purgePage(std::string url)
 Task<> indexStatus()
 {
 	auto db = app().getDbClient();
-	auto domain = co_await db->execSqlCoro("SELECT COUNT(DISTINCT domain_name) AS count FROM pages WHERE content_body IS NOT NULL");
-	auto pages = co_await db->execSqlCoro("SELECT COUNT(*) AS count FROM pages WHERE content_body IS NOT NULL");
+	auto domain_pages = co_await db->execSqlCoro("SELECT COUNT(DISTINCT LOWER(domain_name)) AS domain_count, COUNT(*) AS count "
+		"FROM pages WHERE content_body IS NOT NULL");
 	auto pages_need_update = co_await db->execSqlCoro("SELECT COUNT(*) AS count FROM pages WHERE "
 		"last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY OR last_crawled_at IS NULL");
-	std::cout << domain[0]["count"].as<size_t>() << " domains in index\n";
-	std::cout << pages[0]["count"].as<size_t>() << " pages in index\n";
+	std::cout << domain_pages[0]["domain_count"].as<size_t>() << " domains in index\n";
+	std::cout << domain_pages[0]["count"].as<size_t>() << " pages in index\n";
 	std::cout << pages_need_update[0]["count"].as<size_t>() << " pages need update\n";
 	app().quit();
 }

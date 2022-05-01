@@ -26,14 +26,15 @@ Task<HttpResponsePtr> ToolsController::statistics(HttpRequestPtr req)
     std::shared_ptr<ServerStatistics> server_stat;
     if(cache.findAndFetch("server_stat", server_stat) == false) {
         auto db = app().getDbClient();
-        auto domain = co_await db->execSqlCoro("SELECT COUNT(DISTINCT domain_name) AS count FROM pages WHERE content_body IS NOT NULL");
-        auto pages = co_await db->execSqlCoro("SELECT COUNT(*) AS count FROM pages WHERE content_body IS NOT NULL");
+        auto domain_pages = co_await db->execSqlCoro("SELECT COUNT(DISTINCT LOWER(domain_name)) as domain_count, COUNT(*) AS count "
+            "FROM pages WHERE content_body IS NOT NULL");
         auto content_type = co_await db->execSqlCoro("SELECT COUNT(content_type) AS COUNT, content_type FROM pages "
             "GROUP BY content_type ORDER BY count DESC;");
 
-        uint64_t page_count = pages[0]["count"].as<uint64_t>();
-        uint64_t domain_count = domain[0]["count"].as<uint64_t>();
+        uint64_t page_count = domain_pages[0]["count"].as<uint64_t>();
+        uint64_t domain_count = domain_pages[0]["domain_count"].as<uint64_t>();
         std::vector<std::pair<std::string, uint64_t>> content_type_count;
+        content_type_count.reserve(content_type.size());
         for(const auto& content : content_type) {
             if(content["content_type"].isNull() == true)
                 continue;
@@ -65,7 +66,7 @@ Task<HttpResponsePtr> ToolsController::known_hosts(HttpRequestPtr req)
     std::shared_ptr<std::vector<std::string>> hosts;
     if(cache.findAndFetch("hosts", hosts) == false ) {
         auto db = app().getDbClient();
-        auto known_hosts = co_await db->execSqlCoro("SELECT DISTINCT domain_name, port FROM pages");
+        auto known_hosts = co_await db->execSqlCoro("SELECT DISTINCT LOWER(domain_name) as domain_name, port FROM pages");
         hosts = std::make_shared<std::vector<std::string>>();
         hosts->reserve(known_hosts.size());
         for(const auto& host : known_hosts) {
