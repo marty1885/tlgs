@@ -252,7 +252,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://warmedal.se/.well-known/",
 
         // Non standard conforming robots.txt
-        "gemini://bonequest.com/",
+        "gemini://www.bonequest.com/",
     };
 
     static tlgs::UrlBlacklist blacklist;
