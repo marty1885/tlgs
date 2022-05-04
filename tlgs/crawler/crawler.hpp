@@ -109,7 +109,7 @@ protected:
      * 
      * @param url_str the URL to crawl
      */
-    Task<void> crawlPage(const std::string& url_str);
+    Task<bool> crawlPage(const std::string& url_str);
 
     EventLoop* loop_;
     tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;

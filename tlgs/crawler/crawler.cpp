@@ -140,6 +140,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
                     std::string_view(e.what()).find("transaction") == std::string_view::npos) {
                     throw;
                 }
+                LOG_INFO << "Query for next URL failed due to transaction rollback. Retrying...";
             }
         }
     }
@@ -332,8 +333,11 @@ void GeminiCrawler::dispatchCrawl()
         loop_->runInLoop([this](){dispatchCrawl();});
 
         try {
-            co_await crawlPage(url_str.value());
-            LOG_INFO << "Processed " << url_str.value();
+            bool success = co_await crawlPage(url_str.value());
+            if(success)
+                LOG_INFO << "Processed " << url_str.value();
+            else
+                LOG_ERROR << "Failed to process " << url_str.value();
         }
         catch(std::exception& e) {
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
@@ -342,17 +346,16 @@ void GeminiCrawler::dispatchCrawl()
     });
 }
 
-Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
+Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 {
     auto db = app().getDbClient();
     const auto url = tlgs::Url(url_str);
-    LOG_TRACE << "Crawling: " << url_str;
     if(url.good() == false || url.str() != url_str) {
         // It's fine we delete unnormalized URLs since the crawler will just add them back later when encounter it again
         LOG_WARN << "Warning: URL " << url_str << " is not normalized or invalid. Removing it from the queue.";
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1", url_str);
         co_await db->execSqlCoro("DELETE FROM links WHERE url = $1 OR to_url = $1", url_str);
-        co_return;
+        co_return false;
     }
 
     try {
@@ -383,7 +386,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
 
             if(last_status == 53 && last_crawled_at.after(21*7*24*3600) < trantor::Date::now()) {
                 LOG_INFO << "Skipping " << url.str() << " that was proxy-errored recently";
-                co_return;
+                co_return true;
             }
         }
 
@@ -404,6 +407,8 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                     throw std::runtime_error("Bad redirect");
                 if(co_await shouldCrawl(redirect_url.str()) == false)
                     throw std::runtime_error("Redirected to blocked URL");
+                if(url.protocol() != "gemini")
+                    throw std::runtime_error("Redirected to non-gemini URL");
                 crawl_url = std::move(redirect_url);
             }
         } while(status / 10 == 3 && redirection_count++ < 5);
@@ -435,7 +440,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                     "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
                     url.str(), status, meta, mime);
-                    co_return;
+                    co_return true;
             }
 
             if(mime == "text/gemini") {
@@ -468,7 +473,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
                 , url.str(), status, meta);
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
                 , url.str());
-            co_return;
+            co_return false;
         }
         // trim tailing spaces from title
         auto last_non_space = title.find_last_not_of(' ');
@@ -482,7 +487,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                 "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
                 url.str(), status, meta, mime);
-            co_return;
+            co_return true;
         }
 
         std::set<tlgs::Url> link_urls;
@@ -538,7 +543,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
             "title_vector = to_tsvector(REPLACE(title, '.', ' ') || REPLACE(url, '-', ' ')), "
             "last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;", url.str());
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
-            co_return;
+            co_return true;
 
         // Update link formation
         // XXX: Drogon does not support bulk insert API. We have to do with string concatenation (with proper escaping)
@@ -568,7 +573,6 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         std::string error = e.what();
         if(error == "Timeout" || error == "NetworkFailure")
                 host_timeout_count_[url.hostWithPort(1965)]++;
-        LOG_ERROR << "Failed to crawl " << url.str() << ". Error: " << error;
         try {
             auto db = app().getDbClient();
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
@@ -579,5 +583,7 @@ Task<void> GeminiCrawler::crawlPage(const std::string& url_str)
         catch(...) {
             throw;
         }
+        co_return false;
     }
+    co_return true;
 }
