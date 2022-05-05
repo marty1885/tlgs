@@ -247,28 +247,31 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
 Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage() 
 {
     auto db = app().getDbClient();
-    std::optional<std::string> next_url;
-    bool can_crawl = true;
-    do {
-        next_url = co_await getNextUrl();
+    while(1) {
+        auto next_url = co_await getNextUrl();
         if(next_url.has_value() == false)
             co_return {};
-        can_crawl = co_await shouldCrawl(next_url.value());
+        
+        auto url_str = next_url.value();
+        auto url = tlgs::Url(url_str);
+        if(url.good() == false || url.protocol() != "gemini") {
+            LOG_ERROR << "Failed to parse URL " << url_str;
+            continue;
+        }
+
+        auto can_crawl = co_await shouldCrawl(url_str);
         if(can_crawl == false) {
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
-                , next_url.value(), 0, std::string("blocked"));
+                , url_str, 0, std::string("blocked"));
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
-                , next_url.value());
+                , url_str);
+            continue;
         }
-    } while(can_crawl == false);
-
-    auto url_str = next_url.value();
-    auto url = tlgs::Url(url_str);
-    if(url.good() == false || url.protocol() != "gemini") {
-        LOG_ERROR << "Failed to parse URL " << url_str;
-        co_return {};
+        co_return url.str();
     }
-    co_return url.str();
+
+    LOG_FATAL << "Should not reach here in Crawler::getNextCrawlPage()";
+    co_return {};
 }
 
 #ifdef __linux__
