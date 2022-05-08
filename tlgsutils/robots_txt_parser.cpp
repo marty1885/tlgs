@@ -1,4 +1,5 @@
 #include "robots_txt_parser.hpp"
+#include <drogon/utils/Utilities.h>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -7,10 +8,13 @@
 
 std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string>& agents)
 {
+    std::string lf_str = str;
+    if(str.find("\r\n") != std::string::npos)
+        drogon::utils::replaceAll(lf_str, "\r\n", "\n");
+
     std::set<std::string> disallowed_path; 
-    std::stringstream ss;
-    ss << str;
-    static const std::regex line_re(R"((.*):[ \t]*(.*))");
+    std::stringstream ss(lf_str);
+    static const std::regex line_re(R"([ \t]*(.*):[ \t]*(.*))");
     std::smatch match;
     std::string line;
     bool care = false;

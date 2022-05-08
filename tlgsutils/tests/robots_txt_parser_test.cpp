@@ -91,6 +91,30 @@ DROGON_TEST(RobotTextTest)
         "disalloW: /test\n";
     disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
     REQUIRE(disallowed.size() == 1);
+
+    // Test handling of leading whitespace in value
+    robots =
+        "User-agent: \tindexer\n"
+        "Disallow:         /test\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
+    REQUIRE(disallowed[0] == "/test");
+
+    // Test handling of leading whitespace in key
+    robots =
+        "        User-agent: indexer\n"
+        "        Disallow: /test\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
+    REQUIRE(disallowed[0] == "/test");
+
+    // Test CRLF line endings
+    robots =
+        "User-agent: indexer\r\n"
+        "Disallow: /test\r\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
+    REQUIRE(disallowed[0] == "/test");
 }
 
 DROGON_TEST(BlockedPathTest)
