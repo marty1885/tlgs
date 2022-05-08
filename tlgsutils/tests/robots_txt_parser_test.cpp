@@ -70,6 +70,27 @@ DROGON_TEST(RobotTextTest)
         "Disallow: /\n";
     disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
     REQUIRE(disallowed.size() == 1);
+
+    // Test support for lowercase user-agent
+    robots =
+        "user-agent: indexer\n"
+        "Disallow: /test\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
+
+    // Test support for lowercase disallow
+    robots =
+        "User-agent: indexer\n"
+        "disallow: /test\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
+
+    // Test support for weird cases
+    robots =
+        "User-AGEnT: indexer\n"
+        "disalloW: /test\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
+    REQUIRE(disallowed.size() == 1);
 }
 
 DROGON_TEST(BlockedPathTest)

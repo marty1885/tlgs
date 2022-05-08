@@ -20,7 +20,9 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
             continue;
         
         std::string key = match[1];
-        if(key == "User-agent" || key == "user-agent") {
+        //  convert to lowercase
+        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+        if(key == "user-agent") {
             std::string agent = match[2];
             if(last_line_user_agent) {
                 care |= agents.count(agent) > 0;
@@ -34,7 +36,7 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
             last_line_user_agent = false;
         }
         
-        if(key == "Disallow" && care == true) {
+        if(key == "disallow" && care == true) {
             std::string path = match[2];
             if(path.empty())
                 disallowed_path.clear();
