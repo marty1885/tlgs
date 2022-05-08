@@ -215,7 +215,6 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         bool have_robots_txt = status == 20 && (mime == "text/plain" || mime == "text/gemini");
         if(have_robots_txt) {
             disallowed_path = tlgs::parseRobotsTxt(std::string(resp->body()), {"*", "tlgs", "indexer"});
-            have_robots_txt = true;
         }
 
         try {
