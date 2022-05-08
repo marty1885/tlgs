@@ -2,8 +2,10 @@
 #include <dremini/GeminiServerPlugin.hpp>
 #include <tlgsutils/url_parser.hpp>
 
+#ifdef __linux__
 #define LLUNVEIL_USE_UNVEIL
 #include <llunveil.h>
+#endif
 
 #include "search_result.hpp"
 
