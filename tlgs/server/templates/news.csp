@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-5-9
+
+Updated robots.txt parsing to be more robust. Now there shall be less issues caused by non-standard robots.txt files. Namely added support for case insensitive keys and leading whitespace handling.
+
 ### 2022-4-29
 
 The server has been upgraded to Ubuntu 22.04 with Linux 4.15! With that, we are able to use the landlock kernel feature to prevent attackers from executing any commands/access arbitrary files through any server exploits. Drogon is also updated to 1.7.5
