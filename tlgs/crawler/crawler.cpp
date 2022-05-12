@@ -29,22 +29,37 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
-#ifdef __linux__
+#ifndef WIN32
 
 #include <filesystem>
 
 #include <dirent.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 size_t countOpenSockets()
 {
     namespace fs = std::filesystem;
     size_t count = 0;
-    for(const auto& fd : fs::directory_iterator(fs::path("/proc/self/fd/"))) {
-        if(std::filesystem::is_symlink(fd)
-            && std::filesystem::read_symlink(fd).generic_string().starts_with("socket:["))
-                count++;
+    for(const auto& fd_path : fs::directory_iterator(fs::path("/dev/fd/"))) {
+        int fd = open(fd_path.path().c_str(), O_PATH | O_CLOEXEC);
+        if(fd == -1) {
+            LOG_FATAL << "Failed to open " << fd_path.path() << " for counting open sockets";
+            continue;
+        }
+        struct stat st;
+        if(fstat(fd, &st) == -1) {
+            LOG_FATAL << "Failed to stat " << fd_path.path() << " for counting open sockets";
+            close(fd);
+            continue;
+        }
+
+        if(S_ISSOCK(st.st_mode)) {
+            count++;
+        }
+        close(fd);
     }
 
     return count;
@@ -273,7 +288,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
     co_return {};
 }
 
-#ifdef __linux__
+#ifndef WIN32
 static std::atomic<size_t> page_processed = 0;
 static std::atomic<bool> wait_for_close;
 #endif
@@ -298,7 +313,7 @@ void GeminiCrawler::dispatchCrawl()
         return;
 
     async_run([counter, this]() mutable -> Task<void> {
-#ifdef __linux__
+#ifndef WIN32
         // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
         // many sockets we have opened. Then wait for them to close before we keep crawling again.
         bool master = false;
