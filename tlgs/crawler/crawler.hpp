@@ -89,7 +89,8 @@ protected:
      */
     void dispatchCrawl();
     /**
-     * @brief Should the crawler crawl this URL?
+     * @brief Should the crawler crawl this URL? Checks against robots.txt and an internel
+     * blacklist.
      * @param url The URL to check.
      * 
      * @return true if the crawler should crawl this URL.
@@ -103,7 +104,7 @@ protected:
      * @return std::nullopt if no URL is available.
      */
     Task<std::optional<std::string>> getNextCrawlPage();
-    Task<std::optional<std::string>> getNextUrl();
+    Task<std::optional<std::string>> getNextPotentialCarwlUrl();
     /**
      * @brief Crawl the given URL. Then add the content found in that URL to the DB
      * 

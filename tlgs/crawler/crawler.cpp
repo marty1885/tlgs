@@ -122,7 +122,7 @@ static std::pair<std::string, std::unordered_map<std::string, std::string>> pars
     return {mime_str, params};
 }
 
-Task<std::optional<std::string>> GeminiCrawler::getNextUrl()
+Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
 {
     if(craw_queue_.empty()) {
         // co_return {};
@@ -262,7 +262,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
 {
     auto db = app().getDbClient();
     while(1) {
-        auto next_url = co_await getNextUrl();
+        auto next_url = co_await getNextPotentialCarwlUrl();
         if(next_url.has_value() == false)
             co_return {};
         
