@@ -375,6 +375,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         co_return false;
     }
 
+    std::string error;
     try {
         if(co_await shouldCrawl(url.str()) == false)
             throw std::runtime_error("Blocked by robots.txt");
@@ -587,20 +588,16 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             co_await db->execSqlCoro(page_query.substr(0, page_query.size() - 2) + " ON CONFLICT DO NOTHING;");
     }
     catch(std::exception& e) {
-        std::string error = e.what();
-        if(error == "Timeout" || error == "NetworkFailure")
-                host_timeout_count_[url.hostWithPort(1965)]++;
-        try {
-            auto db = app().getDbClient();
-            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
-                , url.str(), 0, error);
-            co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
-                , url.str());
-        }
-        catch(...) {
-            throw;
-        }
-        co_return false;
+        error = e.what();
+    }
+
+    if(error == "Timeout" || error == "NetworkFailure")
+        host_timeout_count_[url.hostWithPort(1965)]++;
+    if(error != "") {
+        co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
+            , url.str(), 0, error);
+        co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
+            , url.str());
     }
     co_return true;
 }
