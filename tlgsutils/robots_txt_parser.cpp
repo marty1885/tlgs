@@ -101,9 +101,12 @@ static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
     
     // Else we convert the pattern to a regex and try to match
     std::string regex_pattern;
+    const std::string_view escape_chars = "\\.+()[]{}|";
     for(char ch : pattern) {
         if(ch == '*')
             regex_pattern += ".*";
+        else if(escape_chars.find(ch) != std::string_view::npos)
+            regex_pattern += "\\" + std::string(1, ch);
         else
             regex_pattern += ch;
     }

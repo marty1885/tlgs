@@ -142,4 +142,9 @@ DROGON_TEST(BlockedPathTest)
     CHECK(tlgs::isPathBlocked("/foo/123/bar/baz", "/foo/*/bar/*/baz") == false);
     CHECK(tlgs::isPathBlocked("/foo/123/bar/baz", "/foo/*/bar/*") == true);
     CHECK(tlgs::isPathBlocked("/foo", "/***") == true);
+
+    // Check special regex characters are escaped
+    CHECK(tlgs::isPathBlocked("/foo/(", "/foo/(") == true);
+    CHECK(tlgs::isPathBlocked("/*/asd/*/.mp3", "/foo/asd/bar/1mp3") == false);
+    CHECK(tlgs::isPathBlocked("/foo/\\*", "/foo/*") == true);
 }

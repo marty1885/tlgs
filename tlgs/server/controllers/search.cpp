@@ -431,10 +431,8 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
     LOG_DEBUG << "Root set: " << nodes_of_intrest.size() << " pages";
     LOG_DEBUG << "Base set: " << nodes.size() - nodes_of_intrest.size() << " pages";
 
-    std::vector<std::vector<size_t>> out_neighbous;
-    std::vector<std::vector<size_t>> in_neighbous;
-    out_neighbous.resize(nodes.size());
-    in_neighbous.resize(nodes.size());
+    std::vector<std::vector<size_t>> out_neighbous(nodes.size());
+    std::vector<std::vector<size_t>> in_neighbous(nodes.size());
 
     // populate links between nodes
     auto getIfExists = [&](const std::string& name) -> size_t {
