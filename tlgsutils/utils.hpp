@@ -1,5 +1,6 @@
 #include <string>
 #include <vector>
+#include <algorithm>
 #include "url_parser.hpp"
 
 namespace tlgs

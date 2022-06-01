@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <random>
 #include <stdexcept>
+#include <algorithm>
 
 #include <nlohmann/json.hpp> 
 
@@ -466,6 +467,11 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 body = std::move(doc.text);
                 links = std::move(doc.links);
                 title = std::move(doc.title);
+
+                // remove empty links
+                links.erase(std::remove_if(links.begin(), links.end(), [](const std::string& link) {
+                    return link.empty();
+                }), links.end());
                 if(title.empty())
                     title = url.str();
             }
