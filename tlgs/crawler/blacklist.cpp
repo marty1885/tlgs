@@ -291,7 +291,7 @@ bool inBlacklist(const std::string& url_str)
         return true;
     
     // LEO (Low Earth Orbit) webring. These affect how well ranking works
-    if(url.path().ends_width("next.cgi") || url.path().ends_width("prev.cgi") || url.path().ends_width("rand.cgi"))
+    if(url.path().ends_with("next.cgi") || url.path().ends_with("prev.cgi") || url.path().ends_with("rand.cgi"))
         return true;
     
     // We don't have the ablity crawl hidden sites, yet
