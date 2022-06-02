@@ -316,17 +316,5 @@ bool inBlacklist(const std::string& url_str)
             return true;
     }
 
-    // HACK: Sean Conner complains about TLGS crawling invalid URLs on his capsule. Yet as far as I can see
-    // the crawler is doing the right thing. This hack should prevent it.
-    if(url.host() == "gemini.conman.org") {
-        n = url.str().find("/boston/");
-        if(n != std::string::npos) {
-            static const std::regex re(R"(\/boston\/\d{4}\/.*\/\d{4}\/.*)");
-            std::smatch sm;
-            if(std::regex_match(url.path(), sm, re))
-                return true;
-        }
-    }
-
     return false;
 }
