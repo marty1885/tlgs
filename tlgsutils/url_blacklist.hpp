@@ -16,6 +16,8 @@ struct UrlBlacklist
     void add(const std::string& url_str) 
     {
         tlgs::Url url(url_str);
+        if(url.good() == false)
+            throw std::runtime_error("Invalid URL: " + url_str);
         std::string key = tlgs::Url(url).withFragment("").withPath("").withParam("").str();
         blacklisted_.insert({key, url.path()});
     }

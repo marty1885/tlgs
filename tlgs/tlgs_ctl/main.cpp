@@ -78,9 +78,10 @@ Task<> createDb()
 Task<> purgePage(std::string url)
 {
 	auto db = app().getDbClient();
-	co_await db->execSqlCoro("DELETE FROM pages WHERE url like $1;", url);
+	auto page = co_await db->execSqlCoro("DELETE FROM pages WHERE url like $1;", url);
 	co_await db->execSqlCoro("DELETE FROM links WHERE url like $1;", url);
 	co_await db->execSqlCoro("DELETE FROM links WHERE to_url like $1;", url);
+	std::cout << "Deleted " << page.affectedRows() << " pages from index" << std::endl;
 	app().quit();
 }
 
