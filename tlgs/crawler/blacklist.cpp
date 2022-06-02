@@ -35,7 +35,10 @@ bool inBlacklist(const std::string& url_str)
         "git.thebackupbox.net",
         "mikelynch.org",
         "going-flying.com",
-        "gemini.rmf-dev.com"
+        "gemini.rmf-dev.com",
+
+        // Apprantly this is a valid domain on Ubuntu
+        "localhost.localdomain"
     };
 
     static const std::vector<std::string> blacklist_urls = {
