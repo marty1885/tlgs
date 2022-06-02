@@ -253,6 +253,9 @@ bool inBlacklist(const std::string& url_str)
 
         // Non standard conforming robots.txt
         "gemini://www.bonequest.com/",
+
+        // meta info from search engines
+        "gemini://kennedy.gemi.dev/page-info?id=",
     };
 
     static tlgs::UrlBlacklist blacklist;
@@ -282,6 +285,10 @@ bool inBlacklist(const std::string& url_str)
     if(url.str().find(".git/tree/") != std::string::npos)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
+        return true;
+    
+    // LEO (Low Earth Orbit) webring. These affect how well ranking works
+    if(url.path().ends_width("next.cgi") || url.path().ends_width("prev.cgi") || url.path().ends_width("rand.cgi"))
         return true;
     
     // We don't have the ablity crawl hidden sites, yet
