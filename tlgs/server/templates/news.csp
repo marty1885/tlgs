@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-6-2
+
+Added LEO ring endpoints and search engine metadata pages to the crawler blacklist. This should improve search speed and quality.
+
 ### 2022-5-9
 
 Updated robots.txt parsing to be more robust. Now there shall be less issues caused by non-standard robots.txt files. Namely added support for case insensitive keys and leading whitespace handling.
