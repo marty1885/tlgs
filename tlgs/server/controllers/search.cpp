@@ -651,7 +651,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
     auto page = tlgs::try_strtoull(std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
-    auto current_page_idx = page - 1;
+    size_t current_page_idx = page - 1;
 
     std::shared_ptr<RankedResults> ranked_result;
     bool cached = true;
