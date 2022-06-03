@@ -568,10 +568,10 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
             result_map.emplace(node.content_hash, &node);
     }
     auto deduplication_end = std::chrono::high_resolution_clock::now();
-    auto sql_time = std::chrono::duration_cast<std::chrono::seconds>(sql_start - sql_end);
-    auto dedup_time = std::chrono::duration_cast<std::chrono::seconds>(deduplication_end - deduplication_start);
+    auto sql_time = std::chrono::duration_cast<std::chrono::milliseconds>(sql_end - sql_start);
+    auto dedup_time = std::chrono::duration_cast<std::chrono::milliseconds>(deduplication_end - deduplication_start);
     LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results for search term `" << query_str <<"`";
-    LOG_DEBUG << "SQL query time: " << sql_time.count() << "s, Deduplication time: " << dedup_time.count() << "s";;
+    LOG_DEBUG << "SQL query time: " << sql_time.count() << "ms, Deduplication time: " << dedup_time.count() << "ms";;
 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
