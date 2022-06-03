@@ -2,6 +2,7 @@
 #include <vector>
 #include <algorithm>
 #include <optional>
+#include <concepts>
 #include "url_parser.hpp"
 
 namespace tlgs
@@ -47,7 +48,8 @@ bool isNonUriAction(const std::string& sv);
 std::string xxHash64(const std::string_view str);
 
 template <typename T, typename Func>
-std::vector<typename T::value_type> filter(const T& data, Func&& func)
+    requires std::is_invocable_v<Func, typename T::value_type>
+auto filter(const T& data, Func&& func)
 {
     std::vector<typename T::value_type> ret;
     std::copy_if(data.begin(), data.end(), std::back_inserter(ret), std::forward<Func>(func));
@@ -55,6 +57,7 @@ std::vector<typename T::value_type> filter(const T& data, Func&& func)
 }
 
 template <typename T, typename Func>
+    requires std::is_invocable_v<Func, typename T::value_type>
 auto map(const T& data, Func&& func)
 {
     using func_ret_type = decltype(func(data.front()));
