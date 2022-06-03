@@ -11,6 +11,7 @@
 #include <regex>
 #include <span>
 #include <ranges>
+#include <filesystem>
 #include <fmt/core.h>
 
 #include "search_result.hpp"
@@ -649,25 +650,18 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     using RankedResults = std::vector<RankedResult>;
 
     static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
-    const static std::regex re(R"((?:\/v)?\/search\/([0-9]+))");
-    std::smatch match;
-    size_t current_page_idx = 0;
-    if(std::regex_match(req->path(), match, re)) {
-        std::string page_string = match[1];
-        if(!page_string.empty()) {
-            current_page_idx = std::stoull(page_string)-1;
-        }
-    }
+    auto page = tlgs::try_strtoull(std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
+    auto current_page_idx = page - 1;
 
     std::shared_ptr<RankedResults> ranked_result;
     bool cached = true;
     if(result_cache.findAndFetch(query_str, ranked_result) == false) {
-        std::vector<RankedResult> result;
-        result = co_await pageSearch(query_str);
-        ranked_result = std::make_shared<RankedResults>(std::move(result));
+        auto ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
         result_cache.insert(query_str, ranked_result, 600);
         cached = false;
     }
+
+    // should not happen
     if(ranked_result == nullptr)
         throw std::runtime_error("search result is nullptr");
     // TODO: Maybe cache filtered results?
@@ -685,7 +679,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     const size_t item_per_page = 10;
     auto begin = filtered_result->begin()+item_per_page*current_page_idx;
-    auto end = filtered_result->begin()+std::min(item_per_page*(current_page_idx+1), filtered_result->size());
+    auto end = filtered_result->begin()+std::min(size_t{item_per_page*(current_page_idx+1)}, filtered_result->size());
     if(begin > end)
         begin = end;
     // XXX: Drogon's raw SQL querys does not support arrays/sets 
@@ -762,17 +756,8 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::string search_term)
 {
     auto input = utils::urlDecode(req->getParameter("query"));
-    bool conversion_fail = false;
-    size_t page = 0;
-    try {
-        if(!input.empty())
-            page = std::stoull(input);
-    }
-    catch(...) {
-        conversion_fail = true;
-    }
-
-    if(input.empty() || conversion_fail) {
+    auto page = tlgs::try_strtoull(input);
+    if(page.has_value() == false || page.value() == 0) {
         auto resp = HttpResponse::newHttpResponse();
         resp->addHeader("meta", "Go to page");
         resp->setStatusCode((HttpStatusCode)10);
@@ -780,13 +765,16 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
     }
 
     bool verbose = req->path().starts_with("/v");
-    std::string search_path = verbose ? "/v/search" : "/search";
+    const std::string_view search_path = verbose ? "/v/search" : "/search";
 
     auto resp = HttpResponse::newHttpResponse();
-    if(page != 1)
-        resp->addHeader("location", search_path+"/"+std::to_string(page)+"?"+search_term);
+    std::string redirect_location;
+    if(page.value() == 1)
+        redirect_location = fmt::format("{}?{}", search_path, search_term);
     else
-        resp->addHeader("location", search_path+"?"+search_term);
+        redirect_location = fmt::format("{}/{}?{}", search_path, page.value(), search_term);
+
+    resp->addHeader("location", redirect_location);
     resp->setStatusCode(k307TemporaryRedirect);
     co_return resp;
 }
@@ -794,17 +782,12 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
 Task<HttpResponsePtr> SearchController::backlinks(HttpRequestPtr req)
 {
     auto input = utils::urlDecode(req->getParameter("query"));
-    bool input_is_good = false;
     tlgs::Url url(input);
-    if(!input.empty()) {
-        input_is_good = url.good();
-        if(!input_is_good) {
-            url = tlgs::Url("gemini://"+input);
-            input_is_good = url.good();
-        }
-    }
+    // try prepend gemini:// and see if it works
+    if(url.good() == false)
+        url = tlgs::Url("gemini://"+input);
 
-    if(!input_is_good) {
+    if(url.good() == false) {
         auto resp = HttpResponse::newHttpResponse();
         resp->addHeader("meta", "Enter URL to a page");
         resp->setStatusCode((HttpStatusCode)10);

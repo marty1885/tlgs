@@ -122,3 +122,12 @@ std::string tlgs::xxHash64(const std::string_view str)
     auto hash = XXH64(str.data(), str.size(), 0);
     return drogon::utils::binaryStringToHex((unsigned char*)&hash, sizeof(hash));
 }
+
+std::optional<unsigned long long> tlgs::try_strtoull(const std::string& str)
+{
+    char* endptr;
+    unsigned long long result = strtoull(str.c_str(), &endptr, 10);
+    if(endptr == str.c_str() || *endptr != '\0')
+        return std::nullopt;
+    return result;
+}

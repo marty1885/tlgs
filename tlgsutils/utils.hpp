@@ -1,6 +1,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <optional>
 #include "url_parser.hpp"
 
 namespace tlgs
@@ -62,5 +63,7 @@ auto map(const T& data, Func&& func)
     std::transform(data.begin(), data.end(), std::back_inserter(ret), std::forward<Func>(func));
     return ret;
 }
+
+std::optional<unsigned long long> try_strtoull(const std::string& str);
 
 } // namespace tlgs
