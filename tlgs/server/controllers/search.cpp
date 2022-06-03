@@ -380,6 +380,7 @@ SearchController::SearchController()
 
 Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& query_str)
 {
+    auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
     auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, "
         "indexed_content_hash AS content_hash, ts_rank_cd(pages.title_vector, "
@@ -394,6 +395,7 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
         LOG_DEBUG << "DB returned no root set";
         co_return {};
     }
+    auto sql_end = std::chrono::high_resolution_clock::now();
 
     std::unordered_map<std::string, size_t> node_table;
     std::vector<RankedResult> nodes;
@@ -505,6 +507,7 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
     //
     // It works by storing using the hash as the key and looks up other nodes with the same hash. Then decide if 
     // we should merge or not.
+    auto deduplication_start = std::chrono::high_resolution_clock::now();
     std::unordered_multimap<uint64_t,const RankedResult*> result_map;
     result_map.reserve(nodes.size());
     std::string buf(8, '\0');
@@ -564,7 +567,11 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
         if(replaced == false)
             result_map.emplace(node.content_hash, &node);
     }
+    auto deduplication_end = std::chrono::high_resolution_clock::now();
+    auto sql_time = std::chrono::duration_cast<std::chrono::seconds>(sql_start - sql_end);
+    auto dedup_time = std::chrono::duration_cast<std::chrono::seconds>(deduplication_end - deduplication_start);
     LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results for search term `" << query_str <<"`";
+    LOG_DEBUG << "SQL query time: " << sql_time.count() << "s, Deduplication time: " << dedup_time.count() << "s";;
 
     std::vector<RankedResult> search_result;
     search_result.reserve(result_map.size());
