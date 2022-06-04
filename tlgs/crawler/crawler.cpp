@@ -210,7 +210,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
         HttpResponsePtr resp;
         try {
-            std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").str();
+            std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").withFragment("").str();
             LOG_TRACE << "Fetching robots.txt from " << robot_url;
             resp = co_await dremini::sendRequestCoro(robot_url, 10, loop_, 0x2625a0, {}, 10);
         }
@@ -354,8 +354,8 @@ void GeminiCrawler::dispatchCrawl()
             bool success = co_await crawlPage(url_str.value());
             if(success)
                 LOG_INFO << "Processed " << url_str.value();
-            else
-                LOG_ERROR << "Failed to process " << url_str.value();
+            // else // we already print out the error message in crawlPage()
+            //     LOG_ERROR << "Failed to process " << url_str.value();
         }
         catch(std::exception& e) {
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
