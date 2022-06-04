@@ -656,7 +656,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     std::shared_ptr<RankedResults> ranked_result;
     bool cached = true;
     if(result_cache.findAndFetch(query_str, ranked_result) == false) {
-        auto ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
+        ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
         result_cache.insert(query_str, ranked_result, 600);
         cached = false;
     }
