@@ -301,6 +301,9 @@ bool inBlacklist(const std::string& url_str)
     // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
         return true;
+    // bad CGI directory
+    if(url.path().find("/cgi/cgi/cgi/") != std::string::npos)
+        return true;
     // links should not contain ASCII control characters
     if(auto url_str = url.str();
         std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 26; }) != url_str.end())
