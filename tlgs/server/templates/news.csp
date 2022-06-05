@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-6-5
+
+The crawler hang is (very largely) fixed. This a stupid error I made causing circular references. The automated re-indexing will be reactivated in the near future. Up to this point I had to do it manually after discovering the hang.
+
 ### 2022-6-2
 
 Added LEO ring endpoints and search engine metadata pages to the crawler blacklist. This should improve search speed and quality.
