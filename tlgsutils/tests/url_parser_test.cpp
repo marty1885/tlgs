@@ -81,4 +81,22 @@ DROGON_TEST(UrlParserTest)
 
     url = tlgs::Url("gemini://.smol.pub/");
     CHECK(url.good() == false);
+
+    // no protocol, i.e. use the same protocol as the current page
+    url = tlgs::Url("//smol.pub/");
+    CHECK(url.good() == true);
+    CHECK(url.protocol() == "");
+    CHECK(url.host() == "smol.pub");
+    CHECK(url.path() == "/");
+    CHECK(url.str() == "//smol.pub/");
+
+    url = tlgs::Url("//smol.pub/123456");
+    CHECK(url.good() == true);
+    CHECK(url.protocol() == "");
+    CHECK(url.host() == "smol.pub");
+    CHECK(url.path() == "/123456");
+    CHECK(url.str() == "//smol.pub/123456");
+
+    url = tlgs::Url("://");
+    CHECK(url.good() == false);
 }

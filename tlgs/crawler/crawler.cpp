@@ -522,15 +522,19 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
             auto link_url = tlgs::Url(link);
             if(link_url.good()) {
+                if(link_url.protocol() == "")
+                    link_url.withProtocol(url.protocol());
                 if(link_url.protocol() != "gemini")
                     continue;
             }
             // sometimes invalid host/port causes the URL to be invalid. Ignore them
             else if(link.starts_with("gemini://")) {
-                    continue;
+                continue;
             }
             else  {
                 link_url = linkCompose(url, link);
+                if(link_url.good() == false)
+                    continue;
             }
             // We shall not send fragments
             link_url.withFragment("");

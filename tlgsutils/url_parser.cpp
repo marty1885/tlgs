@@ -16,25 +16,38 @@ Url::Url(const std::string& str, bool normalize_url)
     std::string_view sv = str;
 
     // Find protocol
-    auto idx = sv.find("://");
+    auto idx = sv.find("//");
     if(idx == std::string_view::npos) {
         good_ = false;
         return;
     }
-    protocol_ = sv.substr(0, idx);
-    if(protocol_.empty()) {
-        good_ = false;
-        return;
+    else if(idx == 0) {
+        // URLs with no protocol. example: //example.com
+        // this indicates the URL points to the same protocol as the current one
+
+        protocol_ = "";
     }
-    for(auto ch : protocol_) {
-        if(isalnum(ch) == false) {
+    else {
+        if(sv[idx-1] != ':') {
             good_ = false;
             return;
         }
+        protocol_ = sv.substr(0, idx-1);
+        if(protocol_.empty()) {
+            good_ = false;
+            return;
+        }
+        for(auto ch : protocol_) {
+            if(isalnum(ch) == false) {
+                good_ = false;
+                return;
+            }
+        }
+        default_port_ = protocolDefaultPort(protocol_);
     }
-    default_port_ = protocolDefaultPort(protocol_);
+
     // Find host
-    sv = sv.substr(idx+3);
+    sv = sv.substr(idx+2);
     idx = sv.find_first_of(":/");
     host_ = sv.substr(0, idx);
     if(host_.empty() || host_[0] == '.') {
@@ -96,7 +109,7 @@ std::string Url::str() const
     if(!cache_.empty())
         return cache_;
 
-    std::string res = protocol_ + "://"+host_;
+    std::string res = (protocol_.empty() ? std::string("//") : protocol_+"://")+host_;
     if(port_ != 0 && default_port_ != port_)
         res += ":"+std::to_string(port_);
     res += path_;
