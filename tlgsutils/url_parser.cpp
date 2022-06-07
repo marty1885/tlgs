@@ -71,6 +71,10 @@ Url::Url(const std::string& str, bool normalize_url)
         }
         try {
             port_ = std::stoi(std::string(port_sv));
+            if(port_ <= 0 || port_ > 65535) {
+                good_ = false;
+                return;
+            }
         }
         catch(...) {
             good_ = false;

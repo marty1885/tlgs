@@ -99,4 +99,13 @@ DROGON_TEST(UrlParserTest)
 
     url = tlgs::Url("://");
     CHECK(url.good() == false);
+
+    url = tlgs::Url("geini://example.com:65536/");
+    CHECK(url.good() == false);
+
+    url = tlgs::Url("geini://example.com:-1/");
+    CHECK(url.good() == false);
+
+    url = tlgs::Url("geini://example.com:0/");
+    CHECK(url.good() == false);
 }

@@ -58,14 +58,23 @@ GeminiDocument extractGeminiConcise(const std::string_view sv)
                 continue;
         }
         // Avoid paragraph seperators
+        // TODO: Handle unicode paragraph seperators
         else if(node.type == "text" && !node.text.empty()){
             first_content = false;
 
+            // The entire line is made of the same character
             char first = node.text[0];
             bool is_all_same = node.text.find_first_not_of(first) == std::string::npos;
             if(is_all_same)
                 continue;
-            
+            // The first character is repeated 3 times and the last is also repeated 3 times
+            // Ex: ----- next up ------
+            char last = node.text.back();
+            if(node.text.size() > 6 && node.text.substr(0, 3).find_first_not_of(first) == std::string::npos
+                && node.text.substr(node.text.size() - 3).find_first_not_of(last) == std::string::npos
+                && first != ' ' && last != ' ' && first != '\t' && last != '\t')
+                continue;
+
             // avoid people posting output of `tree` without formatting
             if(node.text.find("│") < 3)
                 continue;
