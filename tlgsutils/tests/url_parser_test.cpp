@@ -108,4 +108,16 @@ DROGON_TEST(UrlParserTest)
 
     url = tlgs::Url("geini://example.com:0/");
     CHECK(url.good() == false);
+
+    url = tlgs::Url("gemini/example://example.com/");
+    CHECK(url.good() == false);
+
+    url = tlgs::Url("/example.com//gemini://example.com/");
+    CHECK(url.good() == false);
+
+    url = tlgs::Url("example.com//example.com");
+    CHECK(url.good() == false);
+
+    url = tlgs::Url("http://gemini://example.com");
+    CHECK(url.good() == false);
 }
