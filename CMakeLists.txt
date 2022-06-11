@@ -15,6 +15,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 
 set(DREMINI_BUILD_EXAMPLES OFF)
 set(DREMINI_BUILD_TEST OFF)
+set(SPARTOI_BUILD_EXAMPLES OFF)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_subdirectory(thrid_party/landlock-unveil)
@@ -22,6 +23,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 add_subdirectory(thrid_party/dremini)
 include_directories(thrid_party/dremini)
+add_subdirectory(thrid_party/spartoi)
+include_directories(thrid_party/spartoi)
 
 find_package(Drogon REQUIRED)
 include_directories(.)

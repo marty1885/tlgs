@@ -1,5 +1,6 @@
 #include <drogon/drogon.h>
 #include <dremini/GeminiServerPlugin.hpp>
+#include <spartoi/SpartanServerPlugin.hpp>
 #include <tlgsutils/url_parser.hpp>
 
 #ifdef __linux__
@@ -19,7 +20,7 @@ using namespace dremini;
 
 int main(int argc, char** argv)
 {
-    // app().setLogLevel(trantor::Logger::LogLevel::kTrace);
+    app().setLogLevel(trantor::Logger::LogLevel::kTrace);
     app().registerHandler("/",
         [](const HttpRequestPtr& req,
            std::function<void (const HttpResponsePtr &)> &&callback)
@@ -96,6 +97,24 @@ int main(int argc, char** argv)
         unveil(drogon::app().getUploadPath().c_str(), "rwc");
         unveil(nullptr, nullptr);
         #endif
+    });
+
+    // HACK: Replace Gemini links that needs user input with =:
+    app().registerPostHandlingAdvice([](const HttpRequestPtr& req, const HttpResponsePtr& resp) {
+        if(req->getHeader("protocol") == "spartan" && resp->contentTypeString() == "text/gemini") {
+            std::stringstream ss;
+            ss << resp->getBody();
+
+            std::string result;
+            std::string line;
+            while(std::getline(ss, line)) {
+                if(line.starts_with("=>") && (line.find("/search") || line.find("/backlinks") || line.find("/add_seed"))) {
+                    utils::replaceAll(line, "=>", "=:");
+                }
+                result += line + "\n";
+            }
+            resp->setBody(result);
+        }
     });
 
     CLI::App cli{"TLGS server"};

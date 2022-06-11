@@ -5,7 +5,7 @@ add_executable(tlgs_server
   controllers/api.cpp)
   target_compile_features(tlgs_server PRIVATE cxx_std_20)
 find_package(fmt REQUIRED)
-target_link_libraries(tlgs_server PRIVATE Drogon::Drogon dremini tlgsutils fmt::fmt)
+target_link_libraries(tlgs_server PRIVATE Drogon::Drogon dremini tlgsutils fmt::fmt spartoi)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(tlgs_server PRIVATE llunveil)
 endif()

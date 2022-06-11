@@ -39,6 +39,19 @@
 				"numThread": 3,
 				"translate_to_html": true
 			}
+		},
+		{
+			"name": "spartoi::SpartanServerPlugin",
+			"config": {
+				"listeners": [
+					{
+						"ip": "0.0.0.0",
+						"port": 3000
+					}
+				],
+				"numThread": 3,
+				"translate_to_html": true
+			}
 		}
 	],
 	"listeners": [

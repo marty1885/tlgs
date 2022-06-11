@@ -4,3 +4,6 @@
 [submodule "thrid_party/landlock-unveil"]
 	path = thrid_party/landlock-unveil
 	url = https://github.com/marty1885/landlock-unveil
+[submodule "thrid_party/spartoi"]
+	path = thrid_party/spartoi
+	url = https://github.com/marty1885/spartoi

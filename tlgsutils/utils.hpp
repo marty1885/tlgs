@@ -4,6 +4,8 @@
 #include <optional>
 #include <concepts>
 #include "url_parser.hpp"
+#include <drogon/HttpRequest.h>
+
 
 namespace tlgs
 {
@@ -74,5 +76,4 @@ std::optional<unsigned long long> try_strtoull(const std::string& str);
  * @brief Convert URL into index-friendly string
  */
 std::string indexFriendly(const tlgs::Url& url);
-
 } // namespace tlgs
