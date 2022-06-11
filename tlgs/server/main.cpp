@@ -108,7 +108,9 @@ int main(int argc, char** argv)
             std::string result;
             std::string line;
             while(std::getline(ss, line)) {
-                if(line.starts_with("=>") && (line.find("/search") || line.find("/backlinks") || line.find("/add_seed"))) {
+                if(line.starts_with("=>") && 
+                    (line.find("/search") != std::string::npose || line.find("/backlinks") != std::string::npose
+                    || line.find("/add_seed") != std::string::npose)) {
                     utils::replaceAll(line, "=>", "=:");
                 }
                 result += line + "\n";
