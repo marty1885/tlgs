@@ -308,10 +308,12 @@ bool inBlacklist(const std::string& url_str)
     // Avoid wrongly redirected URLs like gemini://www.example.com/cgi/cgi/cgi/cgi...
     // We allow 2 same path components as /image/gemlog/2020/images sounds like a legit path
     auto path = std::filesystem::path(url.path());
-    std::unordered_map<std::string, size_t> dirname_count;
-    for(const auto& part : path) {
-        if(++dirname_count[part.generic_string()] >= 3)
-            return true;
+    if(std::distance(path.begin(), path.end()) >= 3) {
+        std::unordered_map<std::string, size_t> dirname_count;
+        for(const auto& part : path) {
+            if(++dirname_count[part.generic_string()] >= 3)
+                return true;
+        }
     }
 
     //XXX: half working way to detect commits
