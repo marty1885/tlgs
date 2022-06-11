@@ -131,3 +131,12 @@ std::optional<unsigned long long> tlgs::try_strtoull(const std::string& str)
         return std::nullopt;
     return result;
 }
+
+std::string tlgs::indexFriendly(const tlgs::Url& url)
+{
+    std::string result = url.str();
+    drogon::utils::replaceAll(result, "_", " ");
+    drogon::utils::replaceAll(result, "-", " ");
+
+    return result;
+}

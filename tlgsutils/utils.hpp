@@ -69,4 +69,10 @@ auto map(const T& data, Func&& func)
 
 std::optional<unsigned long long> try_strtoull(const std::string& str);
 
+
+/**
+ * @brief Convert URL into index-friendly string
+ */
+std::string indexFriendly(const tlgs::Url& url);
+
 } // namespace tlgs
