@@ -110,7 +110,7 @@ int main(int argc, char** argv)
             while(std::getline(ss, line)) {
                 if(line.starts_with("=>") && 
                     (line.find("/search") != std::string::npos || line.find("/backlinks") != std::string::npos
-                    || line.find("/add_seed") != std::string::npos)) {
+                    || line.find("/add_seed") != std::string::npos) && line.find("/doc") == std::string::npos) {
                     utils::replaceAll(line, "=>", "=:");
                 }
                 result += line + "\n";
