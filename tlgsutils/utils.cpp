@@ -137,6 +137,7 @@ std::string tlgs::indexFriendly(const tlgs::Url& url)
     std::string result = url.str();
     drogon::utils::replaceAll(result, "_", " ");
     drogon::utils::replaceAll(result, "-", " ");
+    drogon::utils::replaceAll(result, "~", " ");
 
     return result;
 }
