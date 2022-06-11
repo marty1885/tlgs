@@ -31,35 +31,28 @@ int main(int argc, char** argv)
     LOG_INFO << "Loading config from " << config_file;
     app().loadConfigFile(config_file);
 
-    std::shared_ptr<GeminiCrawler> crawler;
-    app().getLoop()->queueInLoop([&]() -> void {
-        crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
+    app().getLoop()->queueInLoop(async_func([&]() -> Task<void> {
+        auto crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
         crawler->setMaxConcurrentConnections(concurrent_connections);
         crawler->enableForceReindex(force_reindex);
         if(!seed_link_file.empty()) {
             std::ifstream in(seed_link_file);
             if(in.is_open() == false) {
-                std::cerr << "Cannot open " << seed_link_file << std::endl;
+                LOG_ERROR << "Cannot open " << seed_link_file;
                 abort();
             }
             std::string line;
             while (std::getline(in, line)) {
-                std::cout << line << "\n";
                 if(line.empty())
                     continue;
+                LOG_INFO << "Seed added: " << line << "\n";
                 crawler->addUrl(line);
             }
         }
 
-        app().getIOLoop(0)->queueInLoop([crawler](){
-            crawler->start();
-        });
-
-        app().getLoop()->queueInLoop([crawler]()->AsyncTask{
-            co_await crawler->awaitEnd();
-            app().quit();
-        });
-    });
+        co_await crawler->crawlAll();
+        app().quit();
+    }));
 
 
     app().run();

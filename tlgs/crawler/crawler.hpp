@@ -65,6 +65,17 @@ public:
         co_return;
     }
 
+    /**
+     * @brief Crawl all the pages
+     * 
+     * @return Task<void> awaiter for the end of the crawl.
+     */
+    Task<void> crawlAll()
+    {
+        dispatchCrawl();
+        return awaitEnd();
+    }
+
     void setMaxConcurrentConnections(size_t n)
     {
         max_concurrent_connections_ = n;
