@@ -131,9 +131,12 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
 
     // co_return {};
     auto db = app().getDbClient();
-    while(true) {
+
+    // Even if multiple threads are trying to aquire data from the same table, they push into the same queue. Thus
+    // we can safely stop querying if we got data in the queue. (as long as LIMIT >> max_concurrent_connections_)
+    while(craw_queue_.empty()) {
         try {
-            // XXX: I really want to have a proper job queue. But using SQL is good enought for now
+            // XXX: Really should have a proper job queue. But using SQL is good enought for now
             auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
                 "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
@@ -150,7 +153,6 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
             std::shuffle(vec.begin(), vec.end(), rng);
             for(auto&& url : vec)
                 craw_queue_.emplace(std::move(url));
-            break;
         }
         catch(std::exception& e) {
             // Only keep trying if is a transaction rollback
