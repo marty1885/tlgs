@@ -125,43 +125,43 @@ static std::pair<std::string, std::unordered_map<std::string, std::string>> pars
 
 Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
 {
-    if(craw_queue_.empty()) {
-        // co_return {};
-        auto db = app().getDbClient();
-        while(true) {
-            bool transaction_failed = false;
-            try {
-                // XXX: I really want to have a proper job queue. But using SQL is good enought for now
-                auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                    "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
-                    "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                    "LIMIT 360) RETURNING url");
-                if(urls.size() == 0)
-                    co_return {};
-                
-                thread_local std::mt19937 rng(std::random_device{}());
-                std::vector<std::string> vec;
-                vec.reserve(urls.size());
-                for(const auto& url : urls)
-                    vec.push_back(url["url"].as<std::string>());
-                // XXX: Half-working attempt as randomizing the crawling order.
-                std::shuffle(vec.begin(), vec.end(), rng);
-                for(auto&& url : vec)
-                    craw_queue_.emplace(std::move(url));
-                break;
+    std::string result;
+    if(craw_queue_.try_pop(result))
+        co_return result;
+
+    // co_return {};
+    auto db = app().getDbClient();
+    while(true) {
+        try {
+            // XXX: I really want to have a proper job queue. But using SQL is good enought for now
+            auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
+                "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+                "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
+                "LIMIT 360) RETURNING url");
+            if(urls.size() == 0)
+                co_return {};
+            
+            thread_local std::mt19937 rng(std::random_device{}());
+            std::vector<std::string> vec;
+            vec.reserve(urls.size());
+            for(const auto& url : urls)
+                vec.push_back(url["url"].as<std::string>());
+            // XXX: Half-working attempt as randomizing the crawling order.
+            std::shuffle(vec.begin(), vec.end(), rng);
+            for(auto&& url : vec)
+                craw_queue_.emplace(std::move(url));
+            break;
+        }
+        catch(std::exception& e) {
+            // Only keep trying if is a transaction rollback
+            if(std::string_view(e.what()).find("deadlock") == std::string_view::npos &&
+                std::string_view(e.what()).find("transaction") == std::string_view::npos) {
+                throw;
             }
-            catch(std::exception& e) {
-                // Only keep trying if is a transaction rollback
-                if(std::string_view(e.what()).find("deadlock") == std::string_view::npos &&
-                    std::string_view(e.what()).find("transaction") == std::string_view::npos) {
-                    throw;
-                }
-                LOG_INFO << "Query for next URL failed due to transaction rollback. Retrying...";
-            }
+            LOG_INFO << "Query for next URL failed due to transaction rollback. Retrying...";
         }
     }
 
-    std::string result;
     if(craw_queue_.try_pop(result))
         co_return result;
     co_return {};
