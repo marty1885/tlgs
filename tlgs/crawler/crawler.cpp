@@ -315,7 +315,7 @@ void GeminiCrawler::dispatchCrawl()
     if(counter->count() >= max_concurrent_connections_)
         return;
 
-    async_run([counter, this]() mutable -> Task<void> {
+    async_run([counter, this]() mutable -> Task<void> {try{
 #ifndef WIN32
         // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
         // many sockets we have opened. Then wait for them to close before we keep crawling again.
@@ -363,7 +363,11 @@ void GeminiCrawler::dispatchCrawl()
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
         }
         loop_->queueInLoop([this](){dispatchCrawl();});
-    });
+    }
+    catch(std::exception& e) {
+        LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
+        dispatchCrawl();
+    }});
 }
 
 Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
