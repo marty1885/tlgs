@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-7-16
+
+Added a new API `/api/v1/known_feeds` to allow querying feeds known to TLGS. See the API documentation for more information.
+
 ### 2022-6-6
 
 Sorry for the ~15 hours of outage yesterday. An exception escaped and caused the entire server to go down. Measures are taken to ensure that won't happen again.
