@@ -64,7 +64,7 @@ auto map(const T& data, Func&& func)
 {
     using func_ret_type = decltype(func(data.front()));
     std::vector<func_ret_type> ret;
-    ret.resize(data.size());
+    ret.reserve(data.size());
     std::transform(data.begin(), data.end(), std::back_inserter(ret), std::forward<Func>(func));
     return ret;
 }

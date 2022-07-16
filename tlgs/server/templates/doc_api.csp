@@ -2,4 +2,12 @@
 
 To assist with (potential) data sharing between servers. TLGS provides a set of APIs that returns some useful internal information in a format that is easy for computers to understand; mostly JSON. Note that these APIs are intentionally slowed down to prevent abuse. The purpose of the APIs should be self explanatory.
 
+## Known resources
+
 => /api/v1/known_hosts
+
+Sends back a list of known hosts. Hosts are distinguished by accessable domain name, the IP address and the port. If the same host is reachable by multiple IP addresses or via different ports. It will show up multiple times in the list.
+
+=> /api/v1/known_feeds
+
+Sends back a list of known feeds. By default this API returns all Atom feeds as that's the default format for Gemini. It also supports RSS and twtxt by setting the paremeter. ex: `/api/v1/known_feeds?rss`
