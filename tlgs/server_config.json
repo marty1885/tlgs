@@ -22,7 +22,8 @@
 		"home_page": "index.gmi",
 		"mime": {
 			"text/gemini": ["gmi", "gemini"]
-		}
+		},
+		"handle_sig_term": false
 	},
 	"plugins": [
 		{

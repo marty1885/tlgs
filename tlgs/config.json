@@ -1,4 +1,7 @@
 {
+    "app":{
+        "handle_sig_term": false
+    },
     "db_clients": [
        {
            "rdbms": "postgresql",
