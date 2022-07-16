@@ -6,7 +6,7 @@ To assist with (potential) data sharing between servers. TLGS provides a set of 
 
 => /api/v1/known_hosts
 
-Sends back a list of known hosts. Hosts are distinguished by accessable domain name, the IP address and the port. If the same host is reachable by multiple IP addresses or via different ports. It will show up multiple times in the list.
+Sends back a list of known hosts. Hosts are distinguished by accessable domain name, the IP address and the port. If the same host is reachable by multiple IP addresses/domain name or via different ports. It will show up multiple times in the list.
 
 => /api/v1/known_feeds
 
