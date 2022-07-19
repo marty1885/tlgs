@@ -37,6 +37,12 @@ DROGON_TEST(GeminiParserBasics)
     CHECK(nodes[0].type == "link");
     CHECK(nodes[0].meta == "gemini://example.com");
 
+    nodes = dremini::parseGemini("=>gemini://example.com");
+    REQUIRE(nodes.size() == 1);
+    CHECK(nodes[0].text == "");
+    CHECK(nodes[0].type == "link");
+    CHECK(nodes[0].meta == "gemini://example.com");
+
     nodes = dremini::parseGemini("Hello World");
     REQUIRE(nodes.size() == 1);
     CHECK(nodes[0].text == "Hello World");
