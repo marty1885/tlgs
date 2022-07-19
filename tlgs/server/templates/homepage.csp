@@ -1,17 +1,17 @@
 <%view header %>
 
 ## Tools and information
-=> /statistics TLGS Statistics
-=> /known-hosts Hosts known to TLGS
-=> /news TLGS News
-=> /add_seed Missing your capsule? Add it to TLGS
+=> /statistics 📈 TLGS Statistics
+=> /known-hosts ☑️ Hosts known to TLGS
+=> /news 📰 TLGS News
+=> /add_seed 🌱 Missing your capsule? Add it to TLGS
 
 ## About TLGS
 
-=> /about About TLGS
-=> /doc/index Documentation: Indexing
-=> /doc/search Documentation: Searching
-=> /doc/backlinks Documentation: Backlinks
-=> /doc/api Documentation: API
+=> /about 📖 About TLGS
+=> /doc/index 📖 Documentation: Indexing
+=> /doc/search 📖 Documentation: Searching
+=> /doc/backlinks 📖 Documentation: Backlinks
+=> /doc/api 📖 Documentation: API
 => gemini://gemini.clehaxze.tw The author's capsule
 => https://github.com/marty1885/tlgs TLGS Source Code
