@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-7-19
+
+More updates are comming! Added emoji to links. And a new WIP API to query known security.txt files. Next I'll be working on improving search result and responsiveness.
+
 ### 2022-7-16
 
 Added a new API `/api/v1/known_feeds` to allow querying feeds known to TLGS. See the API documentation for more information.
