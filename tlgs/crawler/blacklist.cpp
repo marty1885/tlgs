@@ -54,9 +54,6 @@ bool inBlacklist(const std::string& url_str)
         "gemini://songs.zachdecook.com/chord.svg/",
         "gemini://gemini.zachdecook.com/cgi-bin/ccel.sh",
 
-        // kwiecien gemcast
-        "gemini://kwiecien.us/gemcast/",
-
         // breaks crawl due to recursion overflow
         "gemini://cadence.moe/chapo/",
 
