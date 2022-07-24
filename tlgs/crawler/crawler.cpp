@@ -195,19 +195,15 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     // Consult the database to see if this URL is in robots.txt. Contents from the DB is cache locally to 
     // redule the number of DB queries
     const std::string cache_key = url.hostWithPort(1965);
-    static tbb::concurrent_unordered_map<std::string, std::vector<std::string>> policy_cache;
-    auto it = policy_cache.find(cache_key);
-    if(it != policy_cache.end()) {
-        if(it->second.size() == 0)
-            co_return true;
-        co_return !tlgs::isPathBlocked(url.path(), it->second);
-    }
-    LOG_TRACE << "Cannot find " << cache_key << " in local policy cache";
+    static drogon::CacheMap<std::string, std::vector<std::string>> policy_cache(loop_, 5);
+    std::vector<std::string> disallowed_path;
+    if(policy_cache.findAndFetch(cache_key, disallowed_path))
+        co_return !tlgs::isPathBlocked(url.path(), disallowed_path);
 
+    LOG_TRACE << "Cannot find " << cache_key << " in local policy cache";
     auto db = app().getDbClient();
     auto policy_status = co_await db->execSqlCoro("SELECT have_policy FROM robot_policies_status "
         "WHERE host = $1 AND port = $2 AND last_crawled_at > CURRENT_TIMESTAMP - INTERVAL '7' DAY", url.host(), url.port());
-    std::vector<std::string> disallowed_path;
     if(policy_status.size() == 0) {
         LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
         HttpResponsePtr resp;
@@ -257,8 +253,10 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         for(const auto& path : stored_policy)
             disallowed_path.push_back(path["disallowed"].as<std::string>());
     }
-    policy_cache[cache_key] = disallowed_path;
-    co_return !tlgs::isPathBlocked(url.path(), disallowed_path);
+
+    bool should_crawl = !tlgs::isPathBlocked(url.path(), disallowed_path);
+    policy_cache.insert(cache_key, std::move(disallowed_path), 60);
+    co_return should_crawl;
 }
 
 Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage() 
