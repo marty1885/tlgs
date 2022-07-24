@@ -216,6 +216,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://hellomouse.net/user-pages/handicraftsman/ietf/",
         "gemini://tilde.team/~orichalcumcosmonaut/darcs/website/prod/",
         "gemini://gemini.omarpolo.com/cgi",
+        "gemini://gemini.rmf-dev.com",
 
 
         // Archives
