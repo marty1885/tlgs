@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-7-24
+
+Sorry for the few hours of downtime. Upgrading PostgreSQL gone horribly wrong. I had to ditch the entire database and start a completely clean one. Btw, search has been improved some what. Fixed a bug in title matching. For example, directly searching "Cosmos" will bring up the cosmos aggregator.
+
 ### 2022-7-19
 
 More updates are comming! Added emoji to links. And a new WIP API to query known security.txt files. Next I'll be working on improving search result and responsiveness.
