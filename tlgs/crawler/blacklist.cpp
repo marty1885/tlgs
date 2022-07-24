@@ -259,7 +259,7 @@ bool inBlacklist(const std::string& url_str)
             blacklist.add(url);
     });
     // If the domain or URL is blacklisted, we don't want to index it
-    if(blacklist_domains.count(url.host()) != 0)
+    if(blacklist_domains.contains(url.host()))
         return true;
     if(blacklist.isBlocked(url.str()))
         return true;
