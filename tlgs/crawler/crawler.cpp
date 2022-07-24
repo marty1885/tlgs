@@ -574,8 +574,8 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
         // Full text index update
         auto index_firendly_url = indexFriendly(url);
-        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || $2 || content_body), "
-            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || $2), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;"
+        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2 || ' ' || content_body), "
+            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;"
             , url.str(), index_firendly_url);
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
             co_return true;

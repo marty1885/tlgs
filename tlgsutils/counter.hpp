@@ -34,6 +34,8 @@ struct Counter
 
     size_t release()
     {
+        if(!counter_)
+            return -1;
         size_t n = --(*counter_);
         counter_ = nullptr;
         count_ = -1;
