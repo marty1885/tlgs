@@ -23,22 +23,13 @@ bool inBlacklist(const std::string& url_str)
         // localhosts, 127.0.0.x is handled separately
         "localhost",
         "[::1]",
+        // Apprantly this is a valid domain on Ubuntu
+        "localhost.localdomain",
         // Known sites to be down and won't be back
         "gus.guru",
         "ftrv.se",
-        "gmi.bacardi55.io",
-        "clemat.is",
-        "nanako.mooo.com",
-        "gluonspace.com",
-        "lord.re",
-        "thurk.org",
         "git.thebackupbox.net",
-        "mikelynch.org",
-        "going-flying.com",
-        "gemini.rmf-dev.com",
-
-        // Apprantly this is a valid domain on Ubuntu
-        "localhost.localdomain"
+        "mikelynch.org"
     };
 
     static const std::vector<std::string> blacklist_urls = {
