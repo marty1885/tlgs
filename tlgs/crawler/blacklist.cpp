@@ -44,7 +44,7 @@ bool inBlacklist(const std::string& url_str)
     static const std::vector<std::string> blacklist_urls = {
         // Mostly imported from geminispace.info.
 
-
+        // vvvvvvvvvvvvv GUS blacklist vvvvvvvvvvvvv
         "gemini://www.youtube.com/",
 
         // all combinations of a tictactoe board
@@ -172,7 +172,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://80h.dev/agena/",
 
         // astrobotany
-        "gemini://astrobotany.mozz.us/",
+        "gemini://astrobotany.mozz.us/app/",
         "gemini://carboncopy.xyz/cgi-bin/apache.gex/",
 
         // susa.net
@@ -207,6 +207,9 @@ bool inBlacklist(const std::string& url_str)
         "gemini://godocs.io",
         "gemini://emacswiki.org/",
 
+        // ^^^^^^^ GUS blacklist ^^^^^^^
+        // vvvvvvv TLGS blacklist vvvvvvv
+
         // He doen't like bots. As your wish (Just put up a robots.txt)
         "gemini://alexschroeder.ch/",
 
@@ -233,9 +236,6 @@ bool inBlacklist(const std::string& url_str)
         "gemini://gemini.autonomy.earth/posts/",
         "gemini://lists.flounder.online/gemini/threads/messages/",
 
-        // scripts?
-        "gemini://warmedal.se/~antenna",
-
         // Songs?
         "gemini://gemini.rob-bolton.co.uk/songs",
 
@@ -244,10 +244,10 @@ bool inBlacklist(const std::string& url_str)
         "gemini://futagoza.gamiri.com/gmninkle/",
         "gemini://alexey.shpakovsky.ru/maze",
 
-        // dead subdirectory
-        "gemini://gemini.theuse.net/textfiles.com",
+        // dead capsule
+        "gemini://gemini.theuse.net",
 
-        // Timeout but doesn't actually trigger timeout
+        // Infine stream of data - we timeout but not useful to index
         "gemini://202x.moe/resonance",
 
         // Redirection + some infinate recursion somewhere
