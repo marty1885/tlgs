@@ -268,6 +268,9 @@ bool inBlacklist(const std::string& url_str)
     // The entire 127.0.0.1/24 subnet
     if(url.host().starts_with("127.0.0."))
         return true;
+    // ending with .local or .localhost
+    if(url.host().ends_with(".local") || url.host().ends_with(".localhost"))
+        return true;
 
     // Ignore all potential git repos
     if(url.path().starts_with("/git/"))
