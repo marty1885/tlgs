@@ -221,7 +221,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
             std::string error = e.what();
             if(error == "Timeout" || error == "NetworkFailure")
                 host_timeout_count_[url.hostWithPort(1965)]++;
-            co_return true;
+            throw;
         }
 
         assert(resp != nullptr);
