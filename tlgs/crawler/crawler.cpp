@@ -207,6 +207,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     if(policy_status.size() == 0) {
         LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
         HttpResponsePtr resp;
+        // FIXME: THe crawler may request robots.txt multiple times if multiple URLs on the same host are requested.
+        // This is not as efficient as it could be. But does not cause any problems otherwise.
         try {
             std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").withFragment("").str();
             LOG_TRACE << "Fetching robots.txt from " << robot_url;
