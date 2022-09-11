@@ -221,7 +221,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
             std::string error = e.what();
             if(error == "Timeout" || error == "NetworkFailure")
                 host_timeout_count_[url.hostWithPort(1965)]++;
-            throw;
+            co_return true;
         }
 
         assert(resp != nullptr);
@@ -615,6 +615,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             , url.str(), 0, error);
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
             , url.str());
+        co_return false;
     }
     co_return true;
 }
