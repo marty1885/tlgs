@@ -269,7 +269,7 @@ bool inBlacklist(const std::string& url_str)
     if(url.host().starts_with("127.0.0."))
         return true;
     // ending with .local or .localhost
-    if(url.host().ends_with(".local") || url.host().ends_with(".localhost"))
+    if(url.host().ends_with(".local") || url.host().ends_with(".localhost") || url.host().ends_with(".localdomain"))
         return true;
 
     // Ignore all potential git repos

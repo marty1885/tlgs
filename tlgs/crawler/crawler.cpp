@@ -430,10 +430,10 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 auto redirect_url = tlgs::Url(resp->getHeader("meta"));
                 if(crawl_url.str() == redirect_url.str())
                     throw std::runtime_error("Bad redirect");
-                if(co_await shouldCrawl(redirect_url.str()) == false)
-                    throw std::runtime_error("Redirected to blocked URL");
                 if(url.protocol() != "gemini")
                     throw std::runtime_error("Redirected to non-gemini URL");
+                if(co_await shouldCrawl(redirect_url.str()) == false)
+                    throw std::runtime_error("Redirected to blocked URL");
                 crawl_url = std::move(redirect_url);
             }
         } while(status / 10 == 3 && redirection_count++ < 5);
