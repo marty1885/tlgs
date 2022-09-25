@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-9-25
+
+Prevent edge case where the crawler tries to crawl localhost. Updated blacklist. I seems to be closer to resolving a file descriptor issue that leads to crawler hang.
+
 ### 2022-7-24
 
 Sorry for the few hours of downtime. Upgrading PostgreSQL gone horribly wrong. I had to ditch the entire database and start a completely clean one. Btw, search has been improved some what. Fixed a bug in title matching. For example, directly searching "Cosmos" will bring up the cosmos aggregator.
