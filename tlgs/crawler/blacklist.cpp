@@ -236,7 +236,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://alexey.shpakovsky.ru/maze",
 
         // dead capsule
-        "gemini://gemini.theuse.net",
+        "gemini://gemini.theuse.net/",
 
         // Infine stream of data - we timeout but not useful to index
         "gemini://202x.moe/resonance",
