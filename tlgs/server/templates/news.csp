@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2022-10-9 Crawler fixed
+
+Happy to report that the FD leak is solved! Also optimized how DNS clients are created for lower CPU use by crawler.
+
 ### 2022-9-25
 
 Prevent edge case where the crawler tries to crawl localhost. Updated blacklist. I seems to be closer to resolving a file descriptor issue that leads to crawler hang.

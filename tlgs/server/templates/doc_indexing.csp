@@ -43,3 +43,13 @@ You can't. Gemini does not provide a way for TLGS (or any client in that matter)
 ### Does TLGS keeps the data forever?
 
 No.  TLGS will automatically remove a page from it's index after 1 month of failing to re-retrieve it (ex: the server was removed from the internet, the pages was deleted, etc..). 
+
+## Details
+
+### Redirection
+
+TLGS allows up to 5 redirections before giving up. If at any point the redirection is not to a Gemini URL or points to somewhere blocked by robots.txt. TLGS will stop following the redirection chain and consider the page as not found.
+
+### Special case: 53 Proxy Request Refused
+
+TLGS does not care about the returned status code. It only accepts 20 for success and 3X for redirection. All other status means resource not avaliable to TLGS. 53 is the only exception. Martin (the author of TLGS) had a discussion with a Gemini user. Due to some weird quarks (compatablity, etc..) crawlers often ignore certificate errors. Leading to capsules being crawled on the wrong domain. Status 53 is used to tell TLGS that it is requsting from thewrong  domain. TLGS will then stop crawling said page within a 21 day period.
