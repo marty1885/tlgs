@@ -369,7 +369,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             status = std::stoi(resp->getHeader("gemini-status"));
             if(status / 10 == 3) {
                 auto redirect_url = tlgs::Url(resp->getHeader("meta"));
-                if(crawl_url.str() == redirect_url.str())
+                if(redirect_url.good() == false || crawl_url.str() == redirect_url.str())
                     throw std::runtime_error("Bad redirect");
                 if(url.protocol() != "gemini")
                     throw std::runtime_error("Redirected to non-gemini URL");
