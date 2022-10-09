@@ -97,14 +97,20 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
 
     // Even if multiple threads are trying to aquire data from the same table, they push into the same queue. Thus
     // we can safely stop querying if we got data in the queue. (as long as LIMIT >> max_concurrent_connections_)
+    static std::atomic<int> sample_pct{1};
+    constexpr int urls_per_batch = 360;
     while(craw_queue_.empty()) {
         try {
-            // XXX: Really should have a proper job queue. But using SQL is good enought for now
+            int tablesample_pct = sample_pct.load(std::memory_order_acquire);
             auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+                "WHERE url in (SELECT url FROM pages TABLESAMPLE SYSTEM($2) WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT 360) RETURNING url");
-            if(urls.size() == 0)
+                "LIMIT $1) RETURNING url", urls_per_batch, tablesample_pct);
+            if(urls.size() < urls_per_batch*0.9) {
+                const int new_value = std::max(tablesample_pct + 10, 100);
+                sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_release);
+            }
+            if(urls.size() == 0 && tablesample_pct >= 100)
                 co_return {};
             
             thread_local std::mt19937 rng(std::random_device{}());
@@ -254,10 +260,6 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
     co_return {};
 }
 
-#ifndef WIN32
-static std::atomic<size_t> page_processed = 0;
-static std::atomic<bool> wait_for_close;
-#endif
 void GeminiCrawler::dispatchCrawl()
 {
     if(ended_)
