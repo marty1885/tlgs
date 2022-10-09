@@ -30,43 +30,6 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
-#ifndef WIN32
-
-#include <filesystem>
-
-#include <dirent.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-
-size_t countOpenSockets()
-{
-    namespace fs = std::filesystem;
-    size_t count = 0;
-    for(const auto& fd_path : fs::directory_iterator(fs::path("/dev/fd/"))) {
-        int fd = open(fd_path.path().c_str(), O_PATH | O_CLOEXEC);
-        if(fd == -1) {
-            LOG_FATAL << "Failed to open " << fd_path.path() << " for counting open sockets";
-            continue;
-        }
-        struct stat st;
-        if(fstat(fd, &st) == -1) {
-            LOG_FATAL << "Failed to stat " << fd_path.path() << " for counting open sockets";
-            close(fd);
-            continue;
-        }
-
-        if(S_ISSOCK(st.st_mode)) {
-            count++;
-        }
-        close(fd);
-    }
-
-    return count;
-}
-#endif
-
 static std::string mySQLRealEscape(std::string str)
 {
     drogon::utils::replaceAll(str, "\\", "\\\\");
@@ -316,30 +279,6 @@ void GeminiCrawler::dispatchCrawl()
         return;
 
     async_run([counter, this]() mutable -> Task<void> {try{
-#ifndef WIN32
-        // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
-        // many sockets we have opened. Then wait for them to close before we keep crawling again.
-        bool master = false;
-        constexpr int max_sockets = 850; // less than common max sockets on Linux
-        constexpr int check_period = 64;
-        constexpr int retract_count = 256;
-        constexpr int wait_size = max_sockets - check_period - retract_count;
-        static_assert(wait_size > 0);
-        if((++page_processed) % check_period == 0) {
-            int n = countOpenSockets();
-            if(n > max_sockets) {
-                LOG_INFO << "Start waiting for sockets to close";
-                wait_for_close = true;
-                master = true;
-            }
-        }
-
-        while(wait_for_close) {
-            co_await sleepCoro(loop_, 0.05);
-            if(master)
-                wait_for_close = countOpenSockets() >= wait_size;
-        }
-#endif
         auto url_str = co_await getNextCrawlPage();
         // Crawling has ended if the following is true
         // 1. There's no more URL to crawl
