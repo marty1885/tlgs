@@ -448,13 +448,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         size_t body_size = resp->body().size();
         auto new_raw_content_hash = tlgs::xxHash64(resp->body());
         if(status/10 == 2) {
-            // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
-            // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
-            std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
-            // The worst case is 25% from UTF-32 to UTF-8. Smaller than 20% is definatelly a binary file. We don't want to index it.
-            if(body_raw.size() < resp->body().size()/5)
-                throw std::runtime_error("Possible binary files sent as text");
-
             auto [mime_str, mime_param] = parseMime(meta);
             mime = std::move(mime_str);
             charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
@@ -467,6 +460,13 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     url.str(), status, meta, mime);
                     co_return true;
             }
+
+            // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
+            // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
+            std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
+            // The worst case is 25% from UTF-32 to UTF-8. Smaller than 20% is definatelly a binary file. We don't want to index it.
+            if(body_raw.size() < resp->body().size()/5)
+                throw std::runtime_error("Possible binary files sent as text");
 
             if(mime == "text/gemini") {
                 tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(body_raw);
