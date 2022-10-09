@@ -391,6 +391,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         if(status/10 == 2) {
             auto [mime_str, mime_param] = parseMime(meta);
             mime = std::move(mime_str);
+            // trim leading and tailing space and tab from mime as some servers send it
+            mime.erase(0, mime.find_first_not_of(" \t"));
+            mime.erase(mime.find_last_not_of(" \t") + 1);
             charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
             lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
 
