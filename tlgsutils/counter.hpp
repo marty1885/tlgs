@@ -11,7 +11,7 @@ struct Counter
     Counter(std::atomic<size_t>& counter)
         : counter_(&counter)
     {
-        count_ = (*counter_)++;
+        count_ = counter_->fetch_add(1, std::memory_order_acq_rel);
     }
 
     Counter(Counter&& other)
@@ -29,14 +29,14 @@ struct Counter
     ~Counter()
     {
         if(counter_ != nullptr)
-            (*counter_)--;
+            counter_->fetch_sub(1, std::memory_order_acq_rel);
     }
 
     size_t release()
     {
         if(!counter_)
             return -1;
-        size_t n = --(*counter_);
+        size_t n = counter_->fetch_sub(1, std::memory_order_acq_rel)-1;
         counter_ = nullptr;
         count_ = -1;
         return n;
