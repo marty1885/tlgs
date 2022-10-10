@@ -102,10 +102,11 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
     while(craw_queue_.empty()) {
         try {
             int tablesample_pct = sample_pct.load(std::memory_order_acquire);
-            auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                "WHERE url in (SELECT url FROM pages TABLESAMPLE SYSTEM($2) WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+            // HACK: Seems we can't pass bind variables to a subquery, Just compose the query string
+            auto urls = co_await db->execSqlCoro(fmt::format("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
+                "WHERE url in (SELECT url FROM pages TABLESAMPLE SYSTEM({}) WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT $1) RETURNING url", urls_per_batch, tablesample_pct);
+                "LIMIT {}) RETURNING url", tablesample_pct, urls_per_batch));
             if(urls.size() < urls_per_batch*0.9) {
                 const int new_value = std::max(tablesample_pct + 10, 100);
                 sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_release);
