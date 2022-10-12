@@ -93,22 +93,22 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
         co_return result;
 
     // co_return {};
-    auto db = app().getDbClient();
 
     // Even if multiple threads are trying to aquire data from the same table, they push into the same queue. Thus
     // we can safely stop querying if we got data in the queue. (as long as LIMIT >> max_concurrent_connections_)
     static std::atomic<int> sample_pct{1};
     constexpr int urls_per_batch = 360;
     while(craw_queue_.empty()) {
+        auto db = app().getDbClient();
         try {
             int tablesample_pct = sample_pct.load(std::memory_order_acquire);
             // HACK: Seems we can't pass bind variables to a subquery, Just compose the query string
             auto urls = co_await db->execSqlCoro(fmt::format("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                "WHERE url in (SELECT url FROM pages TABLESAMPLE SYSTEM({}) WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+                "WHERE url in (SELECT url FROM pages {} WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT {}) RETURNING url", tablesample_pct, urls_per_batch));
+                "LIMIT {}) RETURNING url", tablesample_pct > 80 ? "" : fmt::format("TABLESAMPLE SYSTEM({})", tablesample_pct), urls_per_batch));
             if(urls.size() < urls_per_batch*0.9) {
-                const int new_value = std::max(tablesample_pct + 10, 100);
+                const int new_value = std::min(tablesample_pct + 10, 100);
                 sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_release);
             }
             if(urls.size() == 0 && tablesample_pct >= 100)
