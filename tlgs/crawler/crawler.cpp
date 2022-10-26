@@ -106,7 +106,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
             auto urls = co_await db->execSqlCoro(fmt::format("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
                 "WHERE url in (SELECT url FROM pages {} WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT {}) RETURNING url", tablesample_pct > 80 ? "" : fmt::format("TABLESAMPLE SYSTEM({})", tablesample_pct), urls_per_batch));
+                "LIMIT {} FOR UPDATE) RETURNING url", tablesample_pct > 80 ? "" : fmt::format("TABLESAMPLE SYSTEM({})", tablesample_pct), urls_per_batch));
             if(urls.size() < urls_per_batch*0.9) {
                 const int new_value = std::min(tablesample_pct + 10, 100);
                 sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_release);
