@@ -234,6 +234,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://gthudson.xyz/cgi-bin/quietplace.cgi",
         "gemini://futagoza.gamiri.com/gmninkle/",
         "gemini://alexey.shpakovsky.ru/maze",
+        "gemini://jsreed5.org/live/cgi-bin/twisty/",
 
         // dead capsule
         "gemini://gemini.theuse.net/",
