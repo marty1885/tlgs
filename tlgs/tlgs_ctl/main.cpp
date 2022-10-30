@@ -9,6 +9,7 @@ using namespace drogon;
 Task<> createDb()
 {
 	auto db = app().getDbClient();
+	co_await db->execSqlCoro("CREATE EXTENSION IF NOT EXISTS pgroonga;");
 	co_await db->execSqlCoro(R"(
 		CREATE TABLE IF NOT EXISTS public.pages (
 			url text NOT NULL,
@@ -26,7 +27,6 @@ Task<> createDb()
 			last_status integer,
 			last_meta text,
 			first_seen_at timestamp without time zone NOT NULL,
-			search_vector tsvector,
 			cross_site_links json,
 			internal_links json,
 			title_vector tsvector,
@@ -37,7 +37,7 @@ Task<> createDb()
 		);
 	)");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS last_crawled_index ON public.pages USING btree (last_crawled_at DESC);");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS search_vector_index ON public.pages USING gin (search_vector);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS search_vector_index ON public.pages USING pgroonga (content_body);");
 
 	co_await db->execSqlCoro(R"(
 		CREATE TABLE IF NOT EXISTS public.links (

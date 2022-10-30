@@ -71,6 +71,7 @@ auto map(const T& data, Func&& func)
 
 std::optional<unsigned long long> try_strtoull(const std::string& str);
 
+std::string pgSQLRealEscape(std::string str);
 
 /**
  * @brief Convert URL into index-friendly string

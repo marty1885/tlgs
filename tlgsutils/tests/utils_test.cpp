@@ -126,3 +126,11 @@ DROGON_TEST(NonUriActionTest)
   CHECK(tlgs::isNonUriAction("mailto:tom@example.com") == true);
   CHECK(tlgs::isNonUriAction("gemini://localhost") == false);
 }
+
+DROGON_TEST(PgSQLEscape)
+{
+  CHECK(tlgs::pgSQLRealEscape("test") == "test");
+  CHECK(tlgs::pgSQLRealEscape("test'") == "test''");
+  CHECK(tlgs::pgSQLRealEscape("test''") == "test''''");
+  CHECK(tlgs::pgSQLRealEscape("\n") == "\\n");
+}

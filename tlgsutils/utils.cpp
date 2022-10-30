@@ -141,3 +141,15 @@ std::string tlgs::indexFriendly(const tlgs::Url& url)
 
     return result;
 }
+
+std::string tlgs::pgSQLRealEscape(std::string str)
+{
+    drogon::utils::replaceAll(str, "\\", "\\\\");
+    drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
+    drogon::utils::replaceAll(str, "\n", "\\n");
+    drogon::utils::replaceAll(str, "\r", "\\r");
+    drogon::utils::replaceAll(str, "'", "''");
+    drogon::utils::replaceAll(str, "\"", "\\\"");
+    drogon::utils::replaceAll(str, "\x1a", "\\Z");
+    return str;
+}
