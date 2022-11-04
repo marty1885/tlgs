@@ -1,6 +1,6 @@
 #include "gemini_parser.hpp"
 #include "utils.hpp"
-#include <dremini/GeminiParser.hpp>
+#include "url_parser.hpp"
 #include <string_view>
 #include <regex>
 #include <iostream>
@@ -87,5 +87,24 @@ GeminiDocument extractGeminiConcise(const std::string_view sv)
             doc.title = node.text;
     }
     return doc;
+}
+
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes)
+{
+    size_t cont_dated_entries_counter = 0;
+    size_t max_cont_dated_entries = 0;
+    const std::regex date_re(R"([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}.*)");
+    std::smatch sm;
+    for(const auto& node : nodes) {
+        if(node.type == "link") {
+            if(std::regex_match(node.text, sm, date_re))
+                cont_dated_entries_counter++;
+            else
+                cont_dated_entries_counter = 0;
+            
+            max_cont_dated_entries = std::max(max_cont_dated_entries, cont_dated_entries_counter);
+        }
+    }
+    return cont_dated_entries_counter >= 3;
 }
 }

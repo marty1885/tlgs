@@ -4,6 +4,8 @@
 #include <vector>
 #include <string>
 
+#include <dremini/GeminiParser.hpp>
+
 namespace tlgs
 {
 
@@ -29,4 +31,11 @@ GeminiDocument extractGemini(const std::string_view sv);
  * @param sv the Gemini document
  */
 GeminiDocument extractGeminiConcise(const std::string_view sv);
+
+/**
+ * @brief Check if a Gemini page can be interperd as Gemsub using heuristics
+ * 
+ * @param doc The parsed Gemini document
+ */
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& doc);
 }
