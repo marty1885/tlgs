@@ -445,10 +445,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 , url.str());
             co_return false;
         }
-        // trim tailing spaces from title
-        auto last_non_space = title.find_last_not_of(' ');
-        if(last_non_space != 0 && last_non_space != std::string::npos)
-            title.resize(last_non_space + 1);
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
