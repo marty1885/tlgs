@@ -10,9 +10,13 @@ namespace tlgs
 {
 GeminiDocument extractGemini(const std::string_view sv)
 {
+    return extractGemini(dremini::parseGemini(sv));
+}
+
+GeminiDocument extractGemini(const std::vector<dremini::GeminiASTNode>& nodes)
+{
     GeminiDocument doc;
-    auto nodes = dremini::parseGemini(sv);
-    doc.text.reserve(sv.size());
+    doc.text.reserve(1024);
     for(const auto& node : nodes) {
         doc.text += node.text + "\n";
         if(node.type == "link")
@@ -26,9 +30,13 @@ GeminiDocument extractGemini(const std::string_view sv)
 
 GeminiDocument extractGeminiConcise(const std::string_view sv)
 {
+    return extractGeminiConcise(dremini::parseGemini(sv));
+}
+
+GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& nodes)
+{
     // TODO: Optimize the function
     GeminiDocument doc;
-    auto nodes = dremini::parseGemini(sv);
     bool first_content = true;
     for(const auto& node : nodes) {
         // Avoid indexing ASCII art. This may remove code blocks. But it shoudn't matter

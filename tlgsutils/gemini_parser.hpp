@@ -23,6 +23,7 @@ struct GeminiDocument
  * @param sv the Gemini document
  */
 GeminiDocument extractGemini(const std::string_view sv);
+GeminiDocument extractGemini(const std::vector<dremini::GeminiASTNode>& nodes);
 
 /**
  * @brief Parse and convert a Gemini document into title
@@ -31,11 +32,12 @@ GeminiDocument extractGemini(const std::string_view sv);
  * @param sv the Gemini document
  */
 GeminiDocument extractGeminiConcise(const std::string_view sv);
+GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& nodes);
 
 /**
  * @brief Check if a Gemini page can be interperd as Gemsub using heuristics
  * 
  * @param doc The parsed Gemini document
  */
-bool isGemsub(const std::vector<dremini::GeminiASTNode>& doc);
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes);
 }

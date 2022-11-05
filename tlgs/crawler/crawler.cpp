@@ -380,6 +380,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         std::string body;
         std::vector<std::string> links;
         size_t body_size = resp->body().size();
+        std::optional<std::string> feed_type;
         auto new_raw_content_hash = tlgs::xxHash64(resp->body());
         if(status/10 == 2) {
             auto [mime_str, mime_param] = parseMime(meta);
@@ -406,10 +407,13 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 throw std::runtime_error("Possible binary files sent as text");
 
             if(mime == "text/gemini") {
-                tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(body_raw);
+                auto nodes = dremini::parseGemini(body_raw);
+                tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(nodes);
                 body = std::move(doc.text);
                 links = std::move(doc.links);
                 title = std::move(doc.title);
+                if(tlgs::isGemsub(nodes))
+                    feed_type = "gemsub";
 
                 // remove empty links
                 links.erase(std::remove_if(links.begin(), links.end(), [](const std::string& link) {
@@ -419,10 +423,16 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     title = url.str();
             }
             else if(mime == "text/plain" || mime == "plaintext" || mime == "text/markdown" || mime == "text/x-rst") {
+                if(url.path().ends_with("twtxt.txt"))
+                    feed_type = "twtxt";
                 title = url.str();
                 body = std::move(body_raw);
             }
             else {
+                if(mime == "application/rss+xml")
+                    feed_type = "rss";
+                else if(mime == "application/atom+xml")
+                    feed_type = "atom";
                 title = url.str();
                 body = "";
                 body_size = 0;
@@ -504,9 +514,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         // TODO: Guess the language of the content. Then index them with different parsers
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
-            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13 WHERE url = $1;",
+            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14 WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
-            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash);
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type);
 
         // Full text index update
         auto index_firendly_url = indexFriendly(url);

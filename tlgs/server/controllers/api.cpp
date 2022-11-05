@@ -55,7 +55,7 @@ Task<HttpResponsePtr> api::v1::known_hosts(HttpRequestPtr req)
 Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
 {
     static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
-    const static std::array allowed_type = {"atom", "rss", "twtxt"};
+    const static std::array allowed_type = {"atom", "rss", "twtxt", "gemsub"};
     auto request_feed_type = req->getParameter("query");
     if(request_feed_type == "")
         request_feed_type = "atom";
@@ -65,15 +65,8 @@ Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
 
     std::shared_ptr<nlohmann::json> feeds;
     if(cache.findAndFetch(request_feed_type, feeds) == false ) {
-        auto feeds_in_db = co_await [&request_feed_type]() {
-            auto db = app().getDbClient();
-            if(request_feed_type == "rss")
-                return db->execSqlCoro("SELECT url FROM pages WHERE content_type = 'application/rss+xml'");
-            else if(request_feed_type == "twtxt")
-                return db->execSqlCoro("SELECT url FROM pages WHERE content_type = 'text/plain' AND url LIKE '%/twtxt.txt'");
-            else
-                return db->execSqlCoro("SELECT url FROM pages WHERE content_type = 'application/atom+xml'");
-        }();
+        auto db = app().getDbClient();
+        auto feeds_in_db = co_await db->execSqlCoro("SELECT url FROM pages WHERE feed_type = $1", request_feed_type);
         auto feeds_vector = tlgs::map(feeds_in_db, [](const auto& feed) { return feed["url"].template as<std::string>(); });
         feeds = std::make_shared<nlohmann::json>(std::move(feeds_vector));
         cache.insert(request_feed_type, feeds, 3600*8);

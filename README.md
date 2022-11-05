@@ -92,6 +92,7 @@ SALSA runs slightly faster than HITS for large search results. Both [literature]
 ## TODOs
 
 - [ ] Code cleanup
+  - [ ] I really need to centralized the crawling logic
 - [x] Randomize the order of crawling. Avoid bashing a single capsule
   * Sort of.. by sampling the pages table with low percentage and increase later
 - [ ] Support parsing markdown
