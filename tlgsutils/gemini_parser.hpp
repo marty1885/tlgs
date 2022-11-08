@@ -3,8 +3,10 @@
 #include <string_view>
 #include <vector>
 #include <string>
+#include <optional>
 
 #include <dremini/GeminiParser.hpp>
+#include "url_parser.hpp"
 
 namespace tlgs
 {
@@ -38,6 +40,10 @@ GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& n
  * @brief Check if a Gemini page can be interperd as Gemsub using heuristics
  * 
  * @param doc The parsed Gemini document
+ * @param feed_url the url of the Gemini page. If set, the chceking heuristics only considers feed entries
+ * that are hosted on the same domain as feed_url
+ * @param
  */
 bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes);
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes, const tlgs::Url& feed_url, const std::string_view protocol = "");
 }

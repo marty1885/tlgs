@@ -162,4 +162,71 @@ Hello world
 => https://example.com/test3.html 2022-01-03 Third article
 )");
     CHECK(tlgs::isGemsub(nodes) == true);
+
+    // index, relative links
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> /test1.html 2022-01-01 First article
+=> /test2.html 2022-01-02 Second article
+=> /test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes) == true);
+
+
+    // index, but now we card about if the file is hosted on the same host
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> https://example.com/test1.html 2022-01-01 First article
+=> https://example.com/test2.html 2022-01-02 Second article
+=> https://example.com/test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes, tlgs::Url("https://example.org")) == false);
+
+    // require gemini feed
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> https://example.com/test1.html 2022-01-01 First article
+=> https://example.com/test2.html 2022-01-02 Second article
+=> https://example.com/test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes, tlgs::Url("https://example.org"), "gemini") == false);
+
+        // require gemini feed
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> gemini://example.com/test1.html 2022-01-01 First article
+=> gemini://example.com/test2.html 2022-01-02 Second article
+=> gemini://example.com/test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes, tlgs::Url("https://example.com"), "gemini") == true);
+
+        // index, links on same host
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> /test1.html 2022-01-01 First article
+=> /test2.html 2022-01-02 Second article
+=> /test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes, tlgs::Url("https://example.com"), "gemini") == true);
+    
+    // index, relative links
+    nodes = dremini::parseGemini(R"(
+# First First
+Hello world
+
+=> test1.html 2022-01-01 First article
+=> test2.html 2022-01-02 Second article
+=> test3.html 2022-01-03 Third article
+)");
+    CHECK(tlgs::isGemsub(nodes, tlgs::Url("https://example.com"), "gemini") == true);
 }
