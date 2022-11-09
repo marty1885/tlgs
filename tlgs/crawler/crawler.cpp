@@ -458,13 +458,13 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
-        // if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
-        //     // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
-        //     co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
-        //         "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
-        //         url.str(), status, meta, mime);
-        //     co_return true;
-        // }
+        if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
+            // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
+            co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
+                "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
+                url.str(), status, meta, mime);
+            co_return true;
+        }
 
         std::set<tlgs::Url> link_urls;
         for(const auto& link : links) {
