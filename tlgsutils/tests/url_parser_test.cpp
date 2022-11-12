@@ -79,6 +79,12 @@ DROGON_TEST(UrlParserTest)
     CHECK(url.fragment() == "123");
     CHECK(url.str() == "gemini://localhost/aaa?456#123");
 
+    url = tlgs::Url("gemini://localhost/aaa#123?456");
+    CHECK(url.good() == true);
+    CHECK(url.path() == "/aaa");
+    CHECK(url.param() == "");
+    CHECK(url.fragment() == "123?456");
+
     url = tlgs::Url("gemini://.smol.pub/");
     CHECK(url.good() == false);
 
