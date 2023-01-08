@@ -30,6 +30,18 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
+static std::string pgSQLRealEscape(std::string str)
+{
+    drogon::utils::replaceAll(str, "\\", "\\\\");
+    drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
+    drogon::utils::replaceAll(str, "\n", "\\n");
+    drogon::utils::replaceAll(str, "\r", "\\r");
+    drogon::utils::replaceAll(str, "'", "\\'");
+    drogon::utils::replaceAll(str, "\"", "\\\"");
+    drogon::utils::replaceAll(str, "\x1a", "\\Z");
+    return str;
+}
+
 static std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
 {
     // still perform conversion event if source encoding is the same as destination encoding
@@ -445,9 +457,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             mime = "<gemini-request-info>";
         }
         else {
-            // treat slow down as host not reachable as TLGS doesn't have a way to delay crawling yet
-            if(status == 44)
-                host_timeout_count_[url.hostWithPort(1965)]++;
             LOG_ERROR << "Failed to fetch " << url.str() << ": " << status;
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url.str(), status, meta);
@@ -520,7 +529,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
         // Full text index update
         auto index_firendly_url = indexFriendly(url);
-        co_await db->execSqlCoro("UPDATE pages SET "
+        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2 || ' ' || content_body), "
             "title_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;"
             , url.str(), index_firendly_url);
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
@@ -534,7 +543,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         for(const auto& link_url : link_urls) {
             bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
 
-            using tlgs::pgSQLRealEscape;
             link_query += fmt::format("('{}', '{}', {}, '{}', {}, '{}', {}), ",
                 pgSQLRealEscape(url.str()), pgSQLRealEscape(url.host()), url.port(), pgSQLRealEscape(link_url.str()),
                 is_cross_site, pgSQLRealEscape(link_url.host()), link_url.port());

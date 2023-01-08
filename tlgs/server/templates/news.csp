@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2023-01-08 Reverting CJK support
+
+I'm reverting the CJK support for now. It's causing SQL timeouts and no clear indication why. 
+
 ### 2022-11-09 Gemsub feed aggregation
 
 In addition to supporting twtxt, Atom and RSS feeds. TLGS now scans for Gemsub feeds while crawling. I'm hoping to build on this capability for a large scale feed aggregation service.
