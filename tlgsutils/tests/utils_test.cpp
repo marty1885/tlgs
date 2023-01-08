@@ -134,3 +134,8 @@ DROGON_TEST(PgSQLEscape)
   CHECK(tlgs::pgSQLRealEscape("test''") == "test''''");
   CHECK(tlgs::pgSQLRealEscape("\n") == "\\n");
 }
+
+DROGON_TEST(XXHashTest)
+{
+  CHECK(tlgs::xxHash64("Hello, World!") == "C49AACF8080FE47F");
+}
