@@ -1,5 +1,6 @@
 #include "crawler.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <random>
 #include <stdexcept>
@@ -113,7 +114,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
                 ,sample_str , urls_per_batch));
             if(urls.size() < urls_per_batch*0.9) {
                 const int new_value = std::min(tablesample_pct + 10, 100);
-                sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_release);
+                sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_acq_rel);
             }
             if(urls.size() == 0 && tablesample_pct >= 100)
                 co_return {};
@@ -123,7 +124,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
             vec.reserve(urls.size());
             for(const auto& url : urls)
                 vec.push_back(url["url"].as<std::string>());
-            // XXX: Half-working attempt as randomizing the crawling order.
+            // XXX: Half-working attempt at randomizing the crawling order.
             std::shuffle(vec.begin(), vec.end(), rng);
             for(auto&& url : vec)
                 craw_queue_.emplace(std::move(url));
