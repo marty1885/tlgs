@@ -1,5 +1,13 @@
 <%view header %>
 
+### 2023-03-05 Experimental TLS capability upgraded
+
+Sorry for disappearing for a while. I've been busy upgrading the TLS capability of TLGS. It's a massive endeavor that involved rewriting a hugh chunk of the networking stack. Now it's stable enough that I am confident to open it to the public. However, it's still experimental. So please report any issues you encounter. Something you might notice (and more to come):
+
+* Supports TLS session resumption, faster page response and faster crawls
+* Behaves well when unexpected TLS alerts are received
+* Disabled weak ciphersuites
+
 ### 2023-01-08 Reverting CJK support
 
 I'm reverting the CJK support for now. It's causing SQL timeouts and no clear indication why. 
