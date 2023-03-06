@@ -1,6 +1,6 @@
 <%view header %>
 
-### 2023-03-05 Experimental TLS capability upgraded
+### 2023-03-05 Experimental TLS capability upgrade
 
 Sorry for disappearing for a while. I've been busy upgrading the TLS capability of TLGS. It's a massive endeavor that involved rewriting a hugh chunk of the networking stack. Now it's stable enough that I am confident to open it to the public. However, it's still experimental. So please report any issues you encounter. Something you might notice (and more to come):
 
