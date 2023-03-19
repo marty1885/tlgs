@@ -285,7 +285,10 @@ bool inBlacklist(const std::string& url_str)
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
     // LEO (Low Earth Orbit) webring. These affect how well ranking works
-    if(url.path().ends_with("next.cgi") || url.path().ends_with("prev.cgi") || url.path().ends_with("rand.cgi"))
+    if(url.path().ends_with("/next.cgi") || url.path().ends_with("/prev.cgi") || url.path().ends_with("/rand.cgi"))
+        return true;
+    // Other orbits
+    if(url.path().ends_with("/next") || url.path().ends_with("/prev") || url.path().ends_with("/rand"))
         return true;
     
     // We don't have the ablity crawl hidden sites, yet
@@ -297,7 +300,7 @@ bool inBlacklist(const std::string& url_str)
         return true;
     // links should not contain ASCII control characters
     if(auto url_str = url.str();
-        std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 26; }) != url_str.end())
+        std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 32; }) != url_str.end())
         return true;
     
     // Avoid wrongly redirected URLs like gemini://www.example.com/cgi/cgi/cgi/cgi...

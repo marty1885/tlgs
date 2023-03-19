@@ -245,13 +245,10 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
             co_return {};
         
         auto url_str = next_url.value();
-        auto url = tlgs::Url(url_str);
-        if(url.good() == false || url.protocol() != "gemini") {
-            LOG_ERROR << "Failed to parse URL " << url_str;
-            continue;
-        }
 
-        auto can_crawl = co_await shouldCrawl(url_str);
+        // URL should not contain any ASCII control characters
+        auto it = std::find_if(url_str.begin(), url_str.end(), [](char c) { return c < 0x20; });
+        auto can_crawl = it == url_str.end() && co_await shouldCrawl(url_str);
         if(can_crawl == false) {
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url_str, 0, std::string("blocked"));
@@ -259,7 +256,9 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
                 , url_str);
             continue;
         }
-        co_return url.str();
+
+        // shouldCrawl() validates the URL. So we can safely use tlgs::Url here
+        co_return tlgs::Url(url_str).str();
     }
 
     LOG_FATAL << "Should not reach here in Crawler::getNextCrawlPage()";
