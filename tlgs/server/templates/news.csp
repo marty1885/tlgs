@@ -1,5 +1,11 @@
 <%view header %>
 
+### 2023-03-20 Caching enhencements, trying Botan as TLS backend
+
+TLGS wasn't caching filtered search results as filtering was a post processing step and is relatively cheap. So TLGS just cached the actual search and filter as requests come. However yesterday I saw a rogue bot that was hammering the search API with the same query and used up significant amount of CPU. So I decided to cache the filtered results as well. This should make them have less impact on the server.
+
+Also switched the TLS backend from OpenSSL to Botan. Just to cross check the TLS adapter. This does limit the TLS version to 1.2 thus higher latency. Please bear with me for a while. Will switch back to OpenSSL once I'm confident that stuff is stable and correct.
+
 ### 2023-03-19 TLS upgrade is stable
 
 I'm happy to report that the TLS upgrade is stable after some patching. Enjoy the faster responses.
