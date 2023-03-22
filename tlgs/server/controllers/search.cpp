@@ -806,7 +806,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     auto t2 = high_resolution_clock::now();
     double processing_time = duration_cast<duration<double>>(t2 - t1).count();
-    LOG_DEBUG << fmt::format("Searching for '{}' took ({}) {} seconds."
+    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds."
         , input, cache_status, processing_time);
     co_return resp;
 }
