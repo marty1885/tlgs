@@ -251,6 +251,9 @@ bool inBlacklist(const std::string& url_str)
 
         // meta info from search engines
         "gemini://kennedy.gemi.dev/page-info?id=",
+
+        // Large book archive and causing OOM 
+        "gemini://gemlog.stargrave.org/",
     };
 
     static tlgs::UrlBlacklist blacklist;
