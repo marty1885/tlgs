@@ -101,6 +101,10 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
     constexpr int urls_per_batch = 360;
     while(craw_queue_.empty()) {
         auto db = app().getDbClient();
+        static std::mutex mtx;
+        std::unique_lock lock(mtx, std::try_to_lock);
+        if(!lock.owns_lock())
+            co_return {};
         try {
             int tablesample_pct = sample_pct.load(std::memory_order_acquire);
             // HACK: Seems we can't pass bind variables to a subquery, Just compose the query string
