@@ -37,7 +37,7 @@ static std::string pgSQLRealEscape(std::string str)
     drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
     drogon::utils::replaceAll(str, "\n", "\\n");
     drogon::utils::replaceAll(str, "\r", "\\r");
-    drogon::utils::replaceAll(str, "'", "\\'");
+    drogon::utils::replaceAll(str, "'", "''");
     drogon::utils::replaceAll(str, "\"", "\\\"");
     drogon::utils::replaceAll(str, "\x1a", "\\Z");
     return str;
@@ -307,6 +307,7 @@ void GeminiCrawler::dispatchCrawl()
         }
         catch(std::exception& e) {
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
+            abort();
         }
         loop_->queueInLoop([this](){dispatchCrawl();});
     }
