@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2023-06-18 XSS Vulnerability fix when displaying gemtext in HTML
+
+I realized that gemtext can contain HTML tags and I wasn't escaping them when rendering. This is now fixed.
+
 ### 2023-03-20 Caching enhencements, trying Botan as TLS backend
 
 TLGS wasn't caching filtered search results as filtering was a post processing step and is relatively cheap. So TLGS just cached the actual search and filter as requests come. However yesterday I saw a rogue bot that was hammering the search API with the same query and used up significant amount of CPU. So I decided to cache the filtered results as well. This should make them have less impact on the server.
