@@ -93,6 +93,7 @@ struct SearchFilter
     std::vector<FilterConstrant> content_type;
     std::vector<FilterConstrant> domain;
     std::vector<SizeConstrant> size;
+    std::vector<FilterConstrant> title;
 
     bool empty() const
     {
@@ -132,6 +133,8 @@ struct hash<SearchFilter>
             hash ^= std::hash<FilterConstrant>{}(dc);
         for(const auto& sc : sf.size)
             hash ^= std::hash<SizeConstrant>{}(sc);
+        for(const auto& tc : sf.title)
+            hash ^= std::hash<FilterConstrant>{}(tc);
         return hash;
     }
 };
@@ -175,7 +178,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
             seperator+1 != token.size() &&
             seperator != 0) {
             auto key = token.substr(0, seperator);
-            if(key == "content_type" || key == "domain" || key == "size")
+            if(key == "content_type" || key == "domain" || key == "size" || key == "intitle")
                 token_type.push_back(TokenType::Filter);
             else
                 token_type.push_back(TokenType::Text);
@@ -200,6 +203,8 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
                 filter.content_type.push_back({std::string(value), negate});
             else if(key == "domain")
                 filter.domain.push_back({std::string(value), negate});
+            else if(key == "intitle")
+                filter.title.push_back({std::string(value), negate});
             else if(key == "size") {
                 static const std::regex re(R"(([><])([\.0-9]+)([GBKMibyte]+)?)", std::regex_constants::icase);
                 std::smatch match;
@@ -231,6 +236,10 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
 
     if(!search_query.empty())
         search_query.resize(search_query.size()-1);
+    
+    // add title filters to search query
+    for(const auto& tc : filter.title)
+        search_query += tc.value + " ";
     return {search_query, filter};
 }
 
@@ -654,6 +663,12 @@ bool evalFilter(const std::string_view host, const std::string_view content_type
     if(!filter.content_type.empty() && content_it == filter.content_type.end())
         return false;
     
+    auto title_it = std::find_if(filter.title.begin(), filter.title.end(), [content_type](const auto& title_constrant){
+        return title_constrant.negate ^ (content_type != "" && content_type.starts_with(title_constrant.value));
+    });
+    if(!filter.title.empty() && title_it == filter.title.end())
+        return false;
+
     return true;
 }
 

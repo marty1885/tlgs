@@ -1,5 +1,15 @@
 <%view header %>
 
+### 20230-07-14 Adding intitle: search filter
+
+I saw gemi.dev's post about Kennedy adding intitle: and site: modifiers. TLGS already supported the domain: filer. Intitle is a good idea so I added it. Now you can search for `intitle:gemini` to find all pages with gemini in the title.
+
+=> gemini://gemi.dev/gemlog/2023-07-12-more-search-options.gmi gemi.dev - Better Gemini searching with intitle: and site: modifiers
+
+For example
+
+=> gemini://tlgs.one/search?intitle=meow
+
 ### 2023-06-18 XSS Vulnerability fix when displaying gemtext in HTML
 
 I realized that gemtext can contain HTML tags and I wasn't escaping them when rendering. This is now fixed.

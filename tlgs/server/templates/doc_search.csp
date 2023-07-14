@@ -17,6 +17,7 @@ Filters allows you to, well, filter the search result by different criteria. The
 * content_type
 * domain
 * size
+* intitle
 
 To apply the filters, just add the filter followed by a colon then the criteria after your search query. Note that you mush supply a search term besides the filter for the search to work. For example
 
