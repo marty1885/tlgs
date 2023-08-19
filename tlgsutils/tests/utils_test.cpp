@@ -101,7 +101,7 @@ DROGON_TEST(LinkCompositionTest)
 
     url = tlgs::Url("gemini://localhost/asd/zxc");
     path = "../dir";
-    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/asd/dir");
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
 
     url = tlgs::Url("gemini://localhost/asd?123");
     path = "dir";
@@ -118,6 +118,14 @@ DROGON_TEST(LinkCompositionTest)
     url = tlgs::Url("gemini://127.0.0.1/asd#123");
     path = "dir?789";
     CHECK(tlgs::linkCompose(url, path).str() == "gemini://127.0.0.1/dir?789");
+
+    url = tlgs::Url("gemini://localhost/test/one.gmi");
+    path = "../two.gmi";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/two.gmi");
+
+    url = tlgs::Url("gemini://dhammapada.michaelnordmeyer.com/chapter-3/33.gmi");
+    path = "../chapter-2/32.gmi";
+    CHECK(tlgs::linkCompose(url, path).str() == "gemini://dhammapada.michaelnordmeyer.com/chapter-2/32.gmi");
 }
 
 DROGON_TEST(NonUriActionTest)
