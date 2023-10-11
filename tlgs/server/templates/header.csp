@@ -4,7 +4,7 @@ if(!title.empty()) {
     $$ << "# " << title << "\n";
 }
 else {
-    $$ << "# TLGS - \"Totally Legit\" Gemini Search";
+    $$ << "# TLGS — “Totally Legit” Gemini Search";
 }
 
 std::string search_url;
