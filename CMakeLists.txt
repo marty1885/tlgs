@@ -17,6 +17,9 @@ set(DREMINI_BUILD_EXAMPLES OFF)
 set(DREMINI_BUILD_TEST OFF)
 set(SPARTOI_BUILD_EXAMPLES OFF)
 
+# Enable tail call optimization so coroutines doesn't blow up the stack
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -foptimize-sibling-calls")
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_subdirectory(thrid_party/landlock-unveil)
     include_directories(thrid_party/landlock-unveil)

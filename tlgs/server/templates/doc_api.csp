@@ -14,6 +14,8 @@ Sends back a list of known hosts. Hosts are distinguished by accessable domain n
 
 Sends back a list of known feeds. By default this API returns all Atom feeds as that's the default format for Gemini. It also supports RSS and twtxt by setting the paremeter. ex: `/api/v1/known_feeds?rss`
 
+Supported formats: atom, rss, twtxt, gemsub
+
 => /api/v1/known_secutity_txt
 
  [WIP] Sends back a list of known security.txt (RFC9116) files. These file include contact information for the host in case of a security issue. The list provided are files accessible by the TLGS crawler. i.e. Not blocked by robots.txt not not in a capsule that TLGS blacklists.

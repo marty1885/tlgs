@@ -224,6 +224,8 @@ bool inBlacklist(const std::string& url_str)
         "gemini://ake.crabdance.com:1966/channel/",
         "gemini://gemini.autonomy.earth/posts/",
         "gemini://lists.flounder.online/gemini/threads/messages/",
+        "gemini://tilde.pink/~bencollver/gamefaqs/",
+        "gemini://tilde.pink/~bencollver/gamefaq/",
 
         // Songs?
         "gemini://gemini.rob-bolton.co.uk/songs",
@@ -232,9 +234,10 @@ bool inBlacklist(const std::string& url_str)
         "gemini://gthudson.xyz/cgi-bin/quietplace.cgi",
         "gemini://futagoza.gamiri.com/gmninkle/",
         "gemini://alexey.shpakovsky.ru/maze",
+        "gemini://jsreed5.org/live/cgi-bin/twisty/",
 
         // dead capsule
-        "gemini://gemini.theuse.net",
+        "gemini://gemini.theuse.net/",
 
         // Infine stream of data - we timeout but not useful to index
         "gemini://202x.moe/resonance",
@@ -248,6 +251,9 @@ bool inBlacklist(const std::string& url_str)
 
         // meta info from search engines
         "gemini://kennedy.gemi.dev/page-info?id=",
+
+        // Large book archive and causing OOM 
+        "gemini://gemlog.stargrave.org/",
     };
 
     static tlgs::UrlBlacklist blacklist;
@@ -268,6 +274,9 @@ bool inBlacklist(const std::string& url_str)
     // The entire 127.0.0.1/24 subnet
     if(url.host().starts_with("127.0.0."))
         return true;
+    // ending with .local or .localhost
+    if(url.host().ends_with(".local") || url.host().ends_with(".localhost") || url.host().ends_with(".localdomain"))
+        return true;
 
     // Ignore all potential git repos
     if(url.path().starts_with("/git/"))
@@ -279,7 +288,10 @@ bool inBlacklist(const std::string& url_str)
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
     // LEO (Low Earth Orbit) webring. These affect how well ranking works
-    if(url.path().ends_with("next.cgi") || url.path().ends_with("prev.cgi") || url.path().ends_with("rand.cgi"))
+    if(url.path().ends_with("/next.cgi") || url.path().ends_with("/prev.cgi") || url.path().ends_with("/rand.cgi"))
+        return true;
+    // Other orbits
+    if(url.path().ends_with("/next") || url.path().ends_with("/prev") || url.path().ends_with("/rand"))
         return true;
     
     // We don't have the ablity crawl hidden sites, yet
@@ -291,7 +303,7 @@ bool inBlacklist(const std::string& url_str)
         return true;
     // links should not contain ASCII control characters
     if(auto url_str = url.str();
-        std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 26; }) != url_str.end())
+        std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 32; }) != url_str.end())
         return true;
     
     // Avoid wrongly redirected URLs like gemini://www.example.com/cgi/cgi/cgi/cgi...

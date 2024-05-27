@@ -11,6 +11,7 @@
 #include <regex>
 #include <span>
 #include <ranges>
+#include <random>
 #include <filesystem>
 #include <fmt/core.h>
 
@@ -92,7 +93,52 @@ struct SearchFilter
     std::vector<FilterConstrant> content_type;
     std::vector<FilterConstrant> domain;
     std::vector<SizeConstrant> size;
+    std::vector<FilterConstrant> title;
+
+    bool empty() const
+    {
+        return content_type.empty() && domain.empty() && size.empty();
+    }
 };
+
+namespace std
+{
+template<>
+struct hash<FilterConstrant>
+{
+    size_t operator()(const FilterConstrant& fc) const
+    {
+        return std::hash<std::string>{}(fc.value) + fc.negate;
+    }
+};
+
+template<>
+struct hash<SizeConstrant>
+{
+    size_t operator()(const SizeConstrant& sc) const
+    {
+        return std::hash<size_t>{}(sc.size) + sc.greater;
+    }
+};
+
+template<>
+struct hash<SearchFilter>
+{
+    size_t operator()(const SearchFilter& sf) const
+    {
+        size_t hash = 0;
+        for(const auto& fc : sf.content_type)
+            hash ^= std::hash<FilterConstrant>{}(fc);
+        for(const auto& dc : sf.domain)
+            hash ^= std::hash<FilterConstrant>{}(dc);
+        for(const auto& sc : sf.size)
+            hash ^= std::hash<SizeConstrant>{}(sc);
+        for(const auto& tc : sf.title)
+            hash ^= std::hash<FilterConstrant>{}(tc);
+        return hash;
+    }
+};
+}
 
 std::optional<size_t> parseSizeUnits(std::string unit)
 {
@@ -132,7 +178,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
             seperator+1 != token.size() &&
             seperator != 0) {
             auto key = token.substr(0, seperator);
-            if(key == "content_type" || key == "domain" || key == "size")
+            if(key == "content_type" || key == "domain" || key == "size" || key == "intitle")
                 token_type.push_back(TokenType::Filter);
             else
                 token_type.push_back(TokenType::Text);
@@ -157,6 +203,8 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
                 filter.content_type.push_back({std::string(value), negate});
             else if(key == "domain")
                 filter.domain.push_back({std::string(value), negate});
+            else if(key == "intitle")
+                filter.title.push_back({std::string(value), negate});
             else if(key == "size") {
                 static const std::regex re(R"(([><])([\.0-9]+)([GBKMibyte]+)?)", std::regex_constants::icase);
                 std::smatch match;
@@ -188,6 +236,10 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
 
     if(!search_query.empty())
         search_query.resize(search_query.size()-1);
+    
+    // add title filters to search query
+    for(const auto& tc : filter.title)
+        search_query += tc.value + " ";
     return {search_query, filter};
 }
 
@@ -611,12 +663,19 @@ bool evalFilter(const std::string_view host, const std::string_view content_type
     if(!filter.content_type.empty() && content_it == filter.content_type.end())
         return false;
     
+    auto title_it = std::find_if(filter.title.begin(), filter.title.end(), [content_type](const auto& title_constrant){
+        return title_constrant.negate ^ (content_type != "" && content_type.starts_with(title_constrant.value));
+    });
+    if(!filter.title.empty() && title_it == filter.title.end())
+        return false;
+
     return true;
 }
 
 Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 {
     using namespace std::chrono;
+    constexpr size_t cache_time = 600;
 
     // Hacky implementation of exponential backoff. We ask each request to wait
     // more and more until we processed something. Since we can't know how sent
@@ -639,8 +698,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     auto [query_str, filter] = parseSearchQuery(input);
     std::transform(query_str.begin(), query_str.end(), query_str.begin(), ::tolower);
 
-    if(query_str.empty())
-    {
+    if(query_str.empty()) {
         auto resp = HttpResponse::newHttpResponse();
         resp->addHeader("meta", "Search for something");
         resp->setStatusCode((HttpStatusCode)10);
@@ -651,31 +709,46 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
     auto page = tlgs::try_strtoull(std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
-    size_t current_page_idx = page - 1;
+    const size_t current_page_idx = page - 1;
 
-    std::shared_ptr<RankedResults> ranked_result;
-    bool cached = true;
-    if(result_cache.findAndFetch(query_str, ranked_result) == false) {
-        ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
-        result_cache.insert(query_str, ranked_result, 600);
-        cached = false;
-    }
+    static const size_t fixed_random = std::random_device()();
+    const auto hasher = std::hash<std::string>();
+    const auto filter_hasher = std::hash<SearchFilter>();
+    const auto query_hash = hasher(query_str)^fixed_random;
+    const auto filter_hash = filter_hasher(filter)^fixed_random;
+    const auto raw_result_cache_key = query_str + "|" + std::to_string(query_hash);
+    const auto filtered_result_cache_key = raw_result_cache_key + "|" + std::to_string(filter_hash);
+    std::string cache_status = "(fully cached)";
 
-    // should not happen
-    if(ranked_result == nullptr)
-        throw std::runtime_error("search result is nullptr");
-    // TODO: Maybe cache filtered results?
-    std::shared_ptr<RankedResults> filtered_result = ranked_result;
-    if(filter.content_type.size() != 0
-        || filter.size.size() != 0
-        || filter.domain.size() != 0) {
-        filtered_result = std::make_shared<RankedResults>();
-        for(const auto& item : *ranked_result) {
-            if(evalFilter(tlgs::Url(item.url).host(), item.content_type, item.size, filter))
-                filtered_result->push_back(item);
+    std::shared_ptr<RankedResults> filtered_result;
+    if(result_cache.findAndFetch(filtered_result_cache_key, filtered_result) == false) {
+        std::shared_ptr<RankedResults> ranked_result;
+        if(result_cache.findAndFetch(raw_result_cache_key, ranked_result) == false) {
+            ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
+            result_cache.insert(raw_result_cache_key, ranked_result, cache_time);
+            cache_status = "";
         }
+        else {
+            cache_status = "(raw cached)";
+        }
+        // should not happen
+        if(ranked_result == nullptr)
+            throw std::runtime_error("search result is nullptr");
+        if(filter.empty() == false) {
+            filtered_result = std::make_shared<RankedResults>();
+            for(const auto& item : *ranked_result) {
+                if(evalFilter(tlgs::Url(item.url).host(), item.content_type, item.size, filter))
+                    filtered_result->push_back(item);
+            }
+        }
+        else {
+            filtered_result = ranked_result;
+        }
+        result_cache.insert(filtered_result_cache_key, filtered_result, cache_time);
     }
-    size_t total_results = filtered_result->size();
+
+    if(filtered_result == nullptr)
+        throw std::runtime_error("filtered search result is nullptr");
 
     const size_t item_per_page = 10;
     auto begin = filtered_result->begin()+item_per_page*current_page_idx;
@@ -738,7 +811,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     data["title"] = sanitizeGemini(input) + " - TLGS Search";
     data["verbose"] = req->path().starts_with("/v/search");
     data["encoded_search_term"] = encoded_search_term;
-    data["total_results"] = total_results;
+    data["total_results"] = filtered_result->size();
     data["current_page_idx"] = current_page_idx;
     data["item_per_page"] = item_per_page;
     data["search_query"] = input; 
@@ -749,7 +822,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     auto t2 = high_resolution_clock::now();
     double processing_time = duration_cast<duration<double>>(t2 - t1).count();
     LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds."
-        , input, (cached?"(cached) ":""), processing_time);
+        , input, cache_status, processing_time);
     co_return resp;
 }
 

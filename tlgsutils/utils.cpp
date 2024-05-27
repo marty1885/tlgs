@@ -91,9 +91,10 @@ tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
         link_url = tlgs::Url(url).withPath(dummy.path()).withParam(dummy.param()).withFragment(dummy.fragment());
     }
     else {
-        tlgs::Url dummy = tlgs::Url("gemini://localhost/"+path);
+        tlgs::Url dummy = tlgs::Url("gemini://localhost/"+path, false);
         auto link_path = std::filesystem::path(dummy.path().substr(1));
         auto current_path = std::filesystem::path(url.path());
+
         if(url.path().back() == '/') // we are visiting a directory  
             link_url = tlgs::Url(url).withPath((current_path/link_path).generic_string());
         else
@@ -140,4 +141,16 @@ std::string tlgs::indexFriendly(const tlgs::Url& url)
     drogon::utils::replaceAll(result, "~", " ");
 
     return result;
+}
+
+std::string tlgs::pgSQLRealEscape(std::string str)
+{
+    drogon::utils::replaceAll(str, "\\", "\\\\");
+    drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
+    drogon::utils::replaceAll(str, "\n", "\\n");
+    drogon::utils::replaceAll(str, "\r", "\\r");
+    drogon::utils::replaceAll(str, "'", "''");
+    drogon::utils::replaceAll(str, "\"", "\\\"");
+    drogon::utils::replaceAll(str, "\x1a", "\\Z");
+    return str;
 }

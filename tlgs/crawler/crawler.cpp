@@ -1,5 +1,6 @@
 #include "crawler.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <random>
 #include <stdexcept>
@@ -30,50 +31,13 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
-#ifndef WIN32
-
-#include <filesystem>
-
-#include <dirent.h>
-#include <stddef.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-
-size_t countOpenSockets()
-{
-    namespace fs = std::filesystem;
-    size_t count = 0;
-    for(const auto& fd_path : fs::directory_iterator(fs::path("/dev/fd/"))) {
-        int fd = open(fd_path.path().c_str(), O_PATH | O_CLOEXEC);
-        if(fd == -1) {
-            LOG_FATAL << "Failed to open " << fd_path.path() << " for counting open sockets";
-            continue;
-        }
-        struct stat st;
-        if(fstat(fd, &st) == -1) {
-            LOG_FATAL << "Failed to stat " << fd_path.path() << " for counting open sockets";
-            close(fd);
-            continue;
-        }
-
-        if(S_ISSOCK(st.st_mode)) {
-            count++;
-        }
-        close(fd);
-    }
-
-    return count;
-}
-#endif
-
-static std::string mySQLRealEscape(std::string str)
+static std::string pgSQLRealEscape(std::string str)
 {
     drogon::utils::replaceAll(str, "\\", "\\\\");
     drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
     drogon::utils::replaceAll(str, "\n", "\\n");
     drogon::utils::replaceAll(str, "\r", "\\r");
-    drogon::utils::replaceAll(str, "'", "\\'");
+    drogon::utils::replaceAll(str, "'", "''");
     drogon::utils::replaceAll(str, "\"", "\\\"");
     drogon::utils::replaceAll(str, "\x1a", "\\Z");
     return str;
@@ -130,18 +94,29 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
         co_return result;
 
     // co_return {};
-    auto db = app().getDbClient();
 
     // Even if multiple threads are trying to aquire data from the same table, they push into the same queue. Thus
     // we can safely stop querying if we got data in the queue. (as long as LIMIT >> max_concurrent_connections_)
+    static std::atomic<int> sample_pct{1};
+    constexpr int urls_per_batch = 360;
     while(craw_queue_.empty()) {
+        auto db = app().getDbClient();
         try {
-            // XXX: Really should have a proper job queue. But using SQL is good enought for now
-            auto urls = co_await db->execSqlCoro("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
-                "WHERE url in (SELECT url FROM pages WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
+            int tablesample_pct = sample_pct.load(std::memory_order_acquire);
+            // HACK: Seems we can't pass bind variables to a subquery, Just compose the query string
+            std::string sample_str;
+            if(tablesample_pct <= 80)
+                sample_str = fmt::format("TABLESAMPLE SYSTEM({})", tablesample_pct);
+            auto urls = co_await db->execSqlCoro(fmt::format("UPDATE pages SET last_queued_at = CURRENT_TIMESTAMP "
+                "WHERE url in (SELECT url FROM pages {} WHERE (last_crawled_at < CURRENT_TIMESTAMP - INTERVAL '3' DAY "
                 "OR last_crawled_at IS NULL) AND (last_queued_at < CURRENT_TIMESTAMP - INTERVAL '5' MINUTE OR last_queued_at IS NULL) "
-                "LIMIT 360) RETURNING url");
-            if(urls.size() == 0)
+                "LIMIT {} FOR UPDATE) RETURNING url"
+                ,sample_str , urls_per_batch));
+            if(urls.size() < urls_per_batch*0.9) {
+                const int new_value = std::min(tablesample_pct + 10, 100);
+                sample_pct.compare_exchange_strong(tablesample_pct, new_value, std::memory_order_acq_rel);
+            }
+            if(urls.size() == 0 && tablesample_pct >= 100)
                 co_return {};
             
             thread_local std::mt19937 rng(std::random_device{}());
@@ -149,7 +124,7 @@ Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
             vec.reserve(urls.size());
             for(const auto& url : urls)
                 vec.push_back(url["url"].as<std::string>());
-            // XXX: Half-working attempt as randomizing the crawling order.
+            // XXX: Half-working attempt at randomizing the crawling order.
             std::shuffle(vec.begin(), vec.end(), rng);
             for(auto&& url : vec)
                 craw_queue_.emplace(std::move(url));
@@ -207,6 +182,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     if(policy_status.size() == 0) {
         LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
         HttpResponsePtr resp;
+        // FIXME: THe crawler may request robots.txt multiple times if multiple URLs on the same host are requested.
+        // This is not as efficient as it could be. But does not cause any problems otherwise.
         try {
             std::string robot_url = tlgs::Url(url).withParam("").withPath("/robots.txt").withFragment("").str();
             LOG_TRACE << "Fetching robots.txt from " << robot_url;
@@ -268,13 +245,10 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
             co_return {};
         
         auto url_str = next_url.value();
-        auto url = tlgs::Url(url_str);
-        if(url.good() == false || url.protocol() != "gemini") {
-            LOG_ERROR << "Failed to parse URL " << url_str;
-            continue;
-        }
 
-        auto can_crawl = co_await shouldCrawl(url_str);
+        // URL should not contain any ASCII control characters
+        auto it = std::find_if(url_str.begin(), url_str.end(), [](char c) { return c < 0x20; });
+        auto can_crawl = it == url_str.end() && co_await shouldCrawl(url_str);
         if(can_crawl == false) {
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url_str, 0, std::string("blocked"));
@@ -282,17 +256,15 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
                 , url_str);
             continue;
         }
-        co_return url.str();
+
+        // shouldCrawl() validates the URL. So we can safely use tlgs::Url here
+        co_return tlgs::Url(url_str).str();
     }
 
     LOG_FATAL << "Should not reach here in Crawler::getNextCrawlPage()";
     co_return {};
 }
 
-#ifndef WIN32
-static std::atomic<size_t> page_processed = 0;
-static std::atomic<bool> wait_for_close;
-#endif
 void GeminiCrawler::dispatchCrawl()
 {
     if(ended_)
@@ -314,30 +286,6 @@ void GeminiCrawler::dispatchCrawl()
         return;
 
     async_run([counter, this]() mutable -> Task<void> {try{
-#ifndef WIN32
-        // HACK: Sometimes this crawler opens way too many sockets and leave them in the CLOSE_WAIT state. We try to find how
-        // many sockets we have opened. Then wait for them to close before we keep crawling again.
-        bool master = false;
-        constexpr int max_sockets = 850; // less than common max sockets on Linux
-        constexpr int check_period = 64;
-        constexpr int retract_count = 256;
-        constexpr int wait_size = max_sockets - check_period - retract_count;
-        static_assert(wait_size > 0);
-        if((++page_processed) % check_period == 0) {
-            int n = countOpenSockets();
-            if(n > max_sockets) {
-                LOG_INFO << "Start waiting for sockets to close";
-                wait_for_close = true;
-                master = true;
-            }
-        }
-
-        while(wait_for_close) {
-            co_await sleepCoro(loop_, 0.05);
-            if(master)
-                wait_for_close = countOpenSockets() >= wait_size;
-        }
-#endif
         auto url_str = co_await getNextCrawlPage();
         // Crawling has ended if the following is true
         // 1. There's no more URL to crawl
@@ -359,6 +307,7 @@ void GeminiCrawler::dispatchCrawl()
         }
         catch(std::exception& e) {
             LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
+            abort();
         }
         loop_->queueInLoop([this](){dispatchCrawl();});
     }
@@ -426,12 +375,12 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             status = std::stoi(resp->getHeader("gemini-status"));
             if(status / 10 == 3) {
                 auto redirect_url = tlgs::Url(resp->getHeader("meta"));
-                if(crawl_url.str() == redirect_url.str())
+                if(redirect_url.good() == false || crawl_url.str() == redirect_url.str())
                     throw std::runtime_error("Bad redirect");
-                if(co_await shouldCrawl(redirect_url.str()) == false)
-                    throw std::runtime_error("Redirected to blocked URL");
                 if(url.protocol() != "gemini")
                     throw std::runtime_error("Redirected to non-gemini URL");
+                if(co_await shouldCrawl(redirect_url.str()) == false)
+                    throw std::runtime_error("Redirected to blocked URL");
                 crawl_url = std::move(redirect_url);
             }
         } while(status / 10 == 3 && redirection_count++ < 5);
@@ -444,17 +393,14 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         std::string body;
         std::vector<std::string> links;
         size_t body_size = resp->body().size();
+        std::optional<std::string> feed_type;
         auto new_raw_content_hash = tlgs::xxHash64(resp->body());
         if(status/10 == 2) {
-            // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
-            // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
-            std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
-            // The worst case is 25% from UTF-32 to UTF-8. Smaller than 20% is definatelly a binary file. We don't want to index it.
-            if(body_raw.size() < resp->body().size()/5)
-                throw std::runtime_error("Possible binary files sent as text");
-
             auto [mime_str, mime_param] = parseMime(meta);
             mime = std::move(mime_str);
+            // trim leading and tailing space and tab from mime as some servers send it
+            mime.erase(0, mime.find_first_not_of(" \t"));
+            mime.erase(mime.find_last_not_of(" \t") + 1);
             charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
             lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
 
@@ -466,11 +412,21 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     co_return true;
             }
 
+            // We should only have text files at this point. Try convert everything to UTF-8 because iconv will
+            // ignore all encoding errors. Thus make Postgres happy for files with doggy encodings.
+            std::string body_raw = tryConvertEncoding(resp->body(), charset.value_or("utf-8"), "utf-8");
+            // The worst case is 25% from UTF-32 to UTF-8. Smaller than 20% is definatelly a binary file. We don't want to index it.
+            if(body_raw.size() < resp->body().size()/5)
+                throw std::runtime_error("Possible binary files sent as text");
+
             if(mime == "text/gemini") {
-                tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(body_raw);
+                auto nodes = dremini::parseGemini(body_raw);
+                tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(nodes);
                 body = std::move(doc.text);
                 links = std::move(doc.links);
                 title = std::move(doc.title);
+                if(tlgs::isGemsub(nodes, url, "gemini"))
+                    feed_type = "gemsub";
 
                 // remove empty links
                 links.erase(std::remove_if(links.begin(), links.end(), [](const std::string& link) {
@@ -480,10 +436,16 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     title = url.str();
             }
             else if(mime == "text/plain" || mime == "plaintext" || mime == "text/markdown" || mime == "text/x-rst") {
+                if(url.path().ends_with("twtxt.txt"))
+                    feed_type = "twtxt";
                 title = url.str();
                 body = std::move(body_raw);
             }
             else {
+                if(mime == "application/rss+xml")
+                    feed_type = "rss";
+                else if(mime == "application/atom+xml")
+                    feed_type = "atom";
                 title = url.str();
                 body = "";
                 body_size = 0;
@@ -503,10 +465,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 , url.str());
             co_return false;
         }
-        // trim tailing spaces from title
-        auto last_non_space = title.find_last_not_of(' ');
-        if(last_non_space != 0 && last_non_space != std::string::npos)
-            title.resize(last_non_space + 1);
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
@@ -566,9 +524,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         // TODO: Guess the language of the content. Then index them with different parsers
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
-            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13 WHERE url = $1;",
+            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14 WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
-            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash);
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type);
 
         // Full text index update
         auto index_firendly_url = indexFriendly(url);
@@ -587,13 +545,13 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
 
             link_query += fmt::format("('{}', '{}', {}, '{}', {}, '{}', {}), ",
-                mySQLRealEscape(url.str()), mySQLRealEscape(url.host()), url.port(), mySQLRealEscape(link_url.str()),
-                is_cross_site, mySQLRealEscape(link_url.host()), link_url.port());
+                pgSQLRealEscape(url.str()), pgSQLRealEscape(url.host()), url.port(), pgSQLRealEscape(link_url.str()),
+                is_cross_site, pgSQLRealEscape(link_url.host()), link_url.port());
 
             if(co_await shouldCrawl(link_url.str()) == false)
                 continue;
             page_query += fmt::format("('{}', '{}', {}, CURRENT_TIMESTAMP), ",
-                mySQLRealEscape(link_url.str()), mySQLRealEscape(link_url.host()), link_url.port());
+                pgSQLRealEscape(link_url.str()), pgSQLRealEscape(link_url.host()), link_url.port());
             page_count++;
         }
 
@@ -613,6 +571,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             , url.str(), 0, error);
         co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
             , url.str());
+        co_return false;
     }
     co_return true;
 }

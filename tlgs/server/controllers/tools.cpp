@@ -66,21 +66,22 @@ Task<HttpResponsePtr> ToolsController::known_hosts(HttpRequestPtr req)
     std::shared_ptr<std::vector<std::string>> hosts;
     if(cache.findAndFetch("hosts", hosts) == false ) {
         auto db = app().getDbClient();
-        auto known_hosts = co_await db->execSqlCoro("SELECT DISTINCT LOWER(domain_name) as domain_name, port FROM pages");
+        auto known_hosts = co_await db->execSqlCoro("SELECT DISTINCT LOWER(domain_name) AS domain_name, port FROM pages");
         hosts = std::make_shared<std::vector<std::string>>();
         hosts->reserve(known_hosts.size());
         for(const auto& host : known_hosts) {
             auto host_name = host["domain_name"].as<std::string>();
             auto port = host["port"].as<int>();
-            if(tlgs::Url("gemini://"+host_name).good() == false)
+            auto url = tlgs::Url("gemini://"+host_name+":"+std::to_string(port));
+            if(url.good() == false)
                 continue;
-            hosts->push_back(tlgs::Url("gemini://"+host_name+":"+std::to_string(port)+"/").str());
+            hosts->push_back(url.str());
         }
         cache.insert("hosts", hosts, 3600*8);
     }
     HttpViewData data;
     data["title"] = std::string("Hosts known to TLGS");
-    data["hosts"] = hosts;
+    data["hosts"] = std::move(hosts);
     auto resp = HttpResponse::newHttpViewResponse("known_hosts", data);
     resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
     co_return resp;

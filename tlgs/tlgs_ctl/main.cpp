@@ -19,6 +19,7 @@ Task<> createDb()
 			lang text,
 			title text,
 			content_body text,
+			feed_type TEXT,
 			size bigint DEFAULT 0 NOT NULL,
 			last_indexed_at timestamp without time zone,
 			last_crawled_at timestamp without time zone,

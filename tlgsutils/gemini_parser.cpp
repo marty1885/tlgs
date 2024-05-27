@@ -1,6 +1,6 @@
 #include "gemini_parser.hpp"
 #include "utils.hpp"
-#include <dremini/GeminiParser.hpp>
+#include "url_parser.hpp"
 #include <string_view>
 #include <regex>
 #include <iostream>
@@ -10,9 +10,13 @@ namespace tlgs
 {
 GeminiDocument extractGemini(const std::string_view sv)
 {
+    return extractGemini(dremini::parseGemini(sv));
+}
+
+GeminiDocument extractGemini(const std::vector<dremini::GeminiASTNode>& nodes)
+{
     GeminiDocument doc;
-    auto nodes = dremini::parseGemini(sv);
-    doc.text.reserve(sv.size());
+    doc.text.reserve(1024);
     for(const auto& node : nodes) {
         doc.text += node.text + "\n";
         if(node.type == "link")
@@ -26,9 +30,13 @@ GeminiDocument extractGemini(const std::string_view sv)
 
 GeminiDocument extractGeminiConcise(const std::string_view sv)
 {
+    return extractGeminiConcise(dremini::parseGemini(sv));
+}
+
+GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& nodes)
+{
     // TODO: Optimize the function
     GeminiDocument doc;
-    auto nodes = dremini::parseGemini(sv);
     bool first_content = true;
     for(const auto& node : nodes) {
         // Avoid indexing ASCII art. This may remove code blocks. But it shoudn't matter
@@ -87,5 +95,67 @@ GeminiDocument extractGeminiConcise(const std::string_view sv)
             doc.title = node.text;
     }
     return doc;
+}
+
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes)
+{
+    size_t cont_dated_entries_counter = 0;
+    size_t max_cont_dated_entries = 0;
+    const std::regex date_re(R"([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}.*)");
+    for(const auto& node : nodes) {
+        std::smatch sm;
+        if(node.type == "link") {
+            if(std::regex_match(node.text, sm, date_re))
+                cont_dated_entries_counter++;
+            else
+                cont_dated_entries_counter = 0;
+            
+            max_cont_dated_entries = std::max(max_cont_dated_entries, cont_dated_entries_counter);
+        }
+    }
+    return max_cont_dated_entries >= 3;
+}
+
+bool isGemsub(const std::vector<dremini::GeminiASTNode>& nodes, const tlgs::Url& feed_url, const std::string_view protocol)
+{
+    size_t cont_dated_entries_counter = 0;
+    size_t max_cont_dated_entries = 0;
+    const std::regex date_re(R"([0-9]{4}-[0-9]{1,2}-[0-9]{1,2}.*)");
+    for(const auto& node : nodes) {
+        if(node.type == "link") {
+            std::smatch sm;
+            if(std::regex_match(node.text, sm, date_re) == false || node.meta.empty()) {
+                cont_dated_entries_counter = 0;
+                continue;
+            }
+
+            tlgs::Url link = tlgs::Url(node.meta);
+            std::string link_protocol;
+            std::string link_host;
+            if(link.good()) {
+                // Empty protocol means using the same protocol as the feed
+                link_protocol = link.protocol();
+                if(link_protocol.empty())
+                    link_protocol = protocol;
+                // empty host means using the same host as the feed (shouldn't happen??)
+                link_host = link.host();
+                if(link_host.empty())
+                    link_host = feed_url.host();
+            }
+            else {
+                // else it's local link
+                link_protocol = protocol;
+                link_host = feed_url.host();
+            }
+
+            if((protocol.empty() || link_protocol == protocol) && link_host == feed_url.host())
+                cont_dated_entries_counter++;
+            else
+                cont_dated_entries_counter = 0;
+            
+            max_cont_dated_entries = std::max(max_cont_dated_entries, cont_dated_entries_counter);
+        }
+    }
+    return max_cont_dated_entries >= 3;
 }
 }

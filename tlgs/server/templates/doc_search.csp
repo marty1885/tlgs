@@ -17,6 +17,7 @@ Filters allows you to, well, filter the search result by different criteria. The
 * content_type
 * domain
 * size
+* intitle
 
 To apply the filters, just add the filter followed by a colon then the criteria after your search query. Note that you mush supply a search term besides the filter for the search to work. For example
 
@@ -27,7 +28,7 @@ To apply the filters, just add the filter followed by a colon then the criteria 
 And this is not a valid search query. TLGS will ask you to enter the search query again
 => /search?content_type:text/plain content_type:text/plain
 
-The size filter works lightly differently. Instead of searching for a certain size, it searches for files larger or smaller than a size. By default the unit of size is in bytes. You can also suffix the size with units. Currently K, M, G, Ki, Mi, Gi are supported. Be aware that TLGS does not know about the size of binary files (images, iso files, etc..). Thus these files are excluded when the size filter is applied.
+The size filter works slightly differently. Instead of searching for a certain size, it searches for files larger or smaller than a size. By default the unit of size is in bytes. You can also suffix the size with units. Currently K, M, G, Ki, Mi, Gi are supported. Be aware that TLGS does not know about the size of binary files (images, iso files, etc..). Thus these files are excluded when the size filter is applied.
 
 => /search?Gemini%20size%3A%3C2048 Gemini size:<2048
 => /search?Gemini%20size%3A%3E5K Gemini size:>5K
