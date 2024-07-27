@@ -217,6 +217,7 @@ bool inBlacklist(const std::string& url_str)
 
 
         // Archives
+       "gemini://musicbrainz.uploadedlobster.com/",
         "gemini://gemini.lost-frequencies.eu/posts/archive",
         "gemini://blitter.com/",
         "gemini://ake.crabdance.com:1966/message/",
@@ -301,6 +302,8 @@ bool inBlacklist(const std::string& url_str)
     // seems to be a sign of common gopher proxy
     if(url.str().find("gopher:/:/") != std::string::npos)
         return true;
+    if(url.str().find("rfc-mirror") != std::string::npos)
+          return true;
     // links should not contain ASCII control characters
     if(auto url_str = url.str();
         std::find_if(url_str.begin(), url_str.end(), [](char c) { return c >= 0 && c < 32; }) != url_str.end())
