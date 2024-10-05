@@ -139,6 +139,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://dioskouroi.xyz/top",
         "gemini://drewdevault.com/cgi-bin/hn.py",
         "gemini://tobykurien.com/maverick/",
+        "gemini://gemini.knusbaum.com",
         
         // wikipedia proxy
         "gemini://wp.pitr.ca/",
