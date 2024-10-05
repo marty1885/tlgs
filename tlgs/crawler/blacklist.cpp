@@ -258,6 +258,9 @@ bool inBlacklist(const std::string& url_str)
 
         // Large book archive and causing OOM 
         "gemini://gemlog.stargrave.org/",
+
+        // Large pile of (to us) useless data
+        "gemini://jsreed5.org/oeis/",
     };
 
     static tlgs::UrlBlacklist blacklist;
