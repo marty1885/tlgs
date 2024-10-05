@@ -229,6 +229,7 @@ bool inBlacklist(const std::string& url_str)
         "gemini://lists.flounder.online/gemini/threads/messages/",
         "gemini://tilde.pink/~bencollver/gamefaqs/",
         "gemini://tilde.pink/~bencollver/gamefaq/",
+        "gemini://gemini.quux.org/0/Archives/mirrors",
 
         // Songs?
         "gemini://gemini.rob-bolton.co.uk/songs",
