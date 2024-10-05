@@ -390,7 +390,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     throw std::runtime_error("Redirected to blocked URL");
 
                 if(status == 31) {
-                    co_await db->execSqlCoro("INSERT INTO perma_redirects (from_url, to_url) VALUES ($1, $2) ON CONFLICT (from_url) DO UPDATE SET to_url = $2 WHERE from_url != $1;",
+                    co_await db->execSqlCoro("INSERT INTO perma_redirects (from_url, to_url) VALUES ($1, $2) ON CONFLICT (from_url) DO UPDATE SET to_url = $2;",
                             crawl_url.str(), redirect_url.str());
                 }
                 crawl_url = std::move(redirect_url);
