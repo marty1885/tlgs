@@ -217,6 +217,7 @@ bool inBlacklist(const std::string& url_str)
 
 
         // Archives
+        "gemini://musicbrainz.uploadedlobster.com/",
        "gemini://musicbrainz.uploadedlobster.com/",
         "gemini://gemini.lost-frequencies.eu/posts/archive",
         "gemini://blitter.com/",
