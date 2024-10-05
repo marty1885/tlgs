@@ -367,8 +367,15 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         HttpResponsePtr resp;
         int redirection_count = 0;
         int status;
-        auto crawl_url = url;
+        tlgs::Url crawl_url = url;
         do {
+            auto redirect = co_await db->execSqlCoro("SELECT to_url FROM perma_redirects WHERE from_url = $1;", crawl_url.str());
+            if(redirect.size() != 0) {
+                crawl_url = tlgs::Url(redirect[0]["to_url"].as<std::string>());
+                redirection_count++;
+                status = 30;
+                continue;
+            }
             // 2.5MB is the maximum size of page we will index. 10s timeout, max 5 redirects and 25s max transfer time.
             resp = co_await dremini::sendRequestCoro(crawl_url.str(), 10, loop_, 0x2625a0, indexd_mimes, 25.0);
 
@@ -381,6 +388,11 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     throw std::runtime_error("Redirected to non-gemini URL");
                 if(co_await shouldCrawl(redirect_url.str()) == false)
                     throw std::runtime_error("Redirected to blocked URL");
+
+                if(status == 31) {
+                    co_await db->execSqlCoro("INSERT INTO perma_redirects (from_url, to_url) VALUES ($1, $2) ON CONFLICT UPDATE SET to_url = $2 WHERE to_url != $2;",
+                            crawl_url.str(), redirect_url.str());
+                }
                 crawl_url = std::move(redirect_url);
             }
         } while(status / 10 == 3 && redirection_count++ < 5);

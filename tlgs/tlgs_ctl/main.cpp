@@ -73,6 +73,14 @@ Task<> createDb()
 			PRIMARY KEY (host, port)
 		);
 	)");
+
+	co_await db->execSqlCoro(R"(
+		CREATE TABLE IF NOT EXISTS public.perma_redirects (
+			from_url text NOT NULL,
+			to_url text NOT NULL,
+			PRIMARY KEY (from_url)
+		);
+	)");
 	app().quit();
 }
 
