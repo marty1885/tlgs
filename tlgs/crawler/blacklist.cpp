@@ -329,7 +329,7 @@ bool inBlacklist(const std::string& url_str)
     //XXX: half working way to detect commits
     auto n = url.str().find("commits/");
     if(n != std::string::npos) {
-        static const std::regex re("commits/[a-z0-9A-Z]+/.*");
+        static const std::regex re("commits/[a-z0-9A-Z]+[/\\.].*");
         std::smatch sm;
         std::string commit = url.str().substr(n);
         if(std::regex_match(commit, sm, re))
