@@ -505,6 +505,10 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             else if(link.starts_with("gemini://")) {
                 continue;
             }
+            // Drop links that are too long and obviously invalid
+            else if(link.size() > 1024) {
+                continue;
+            }
             else  {
                 link_url = linkCompose(url, link);
                 if(link_url.good() == false)
