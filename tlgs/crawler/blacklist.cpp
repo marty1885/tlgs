@@ -298,7 +298,8 @@ bool inBlacklist(const std::string& url_str)
     if(url.path().ends_with("/next.cgi") || url.path().ends_with("/prev.cgi") || url.path().ends_with("/rand.cgi"))
         return true;
     // Other orbits
-    if(url.path().ends_with("/next") || url.path().ends_with("/prev") || url.path().ends_with("/rand"))
+    if(url.path().ends_with("/next") || url.path().ends_with("/prev") || url.path().ends_with("/rand")
+        || url.path().find("/next.gmi?") != std::string::npos || url.path().find("/prev.gmi?") != std::string::npos)
         return true;
     
     // We don't have the ablity crawl hidden sites, yet
