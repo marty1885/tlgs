@@ -357,6 +357,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             }();
 
             if(last_status == 53 && last_crawled_at.after(21*7*24*3600) < trantor::Date::now()) {
+                co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = 0 WHERE url = $1;", url.str());
                 LOG_INFO << "Skipping " << url.str() << " that was proxy-errored recently";
                 co_return true;
             }
