@@ -29,7 +29,8 @@ bool inBlacklist(const std::string& url_str)
         "gus.guru",
         "ftrv.se",
         "git.thebackupbox.net",
-        "mikelynch.org"
+        "mikelynch.org".
+        "campaignwiki.org" // Likely configration error
     };
 
     static const std::vector<std::string> blacklist_urls = {
