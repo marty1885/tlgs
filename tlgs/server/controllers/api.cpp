@@ -1,3 +1,4 @@
+#include <drogon/CacheMap.h>
 #include <drogon/HttpController.h>
 #include <drogon/utils/coroutine.h>
 #include <drogon/HttpAppFramework.h>
@@ -28,9 +29,10 @@ public:
 };
 }
 
+static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
+
 Task<HttpResponsePtr> api::v1::known_hosts(HttpRequestPtr req)
 {
-    static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
     std::shared_ptr<nlohmann::json> hosts;
     if(cache.findAndFetch("hosts", hosts) == false ) {
         auto db = app().getDbClient();
@@ -56,7 +58,6 @@ Task<HttpResponsePtr> api::v1::known_hosts(HttpRequestPtr req)
 
 Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
 {
-    static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
     const static std::array allowed_type = {"atom", "rss", "twtxt", "gemsub"};
     auto request_feed_type = req->getParameter("query");
     if(request_feed_type == "")
@@ -84,7 +85,6 @@ Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
 
 Task<HttpResponsePtr> api::v1::known_security_txt(HttpRequestPtr req)
 {
-    static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
     std::shared_ptr<nlohmann::json> security_txt;
     if(cache.findAndFetch("security_txt", security_txt) == false ) {
         auto db = app().getDbClient();
@@ -106,7 +106,6 @@ Task<HttpResponsePtr> api::v1::known_security_txt(HttpRequestPtr req)
 
 Task<HttpResponsePtr> api::v1::known_perma_redirects(HttpRequestPtr req)
 {
-    static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
     std::shared_ptr<nlohmann::json> perma_redirects;
     if(cache.findAndFetch("perma_redirects", perma_redirects) == false ) {
         auto db = app().getDbClient();
