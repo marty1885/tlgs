@@ -17,11 +17,13 @@ public:
 	Task<HttpResponsePtr> known_hosts(HttpRequestPtr req);
     Task<HttpResponsePtr> known_feeds(HttpRequestPtr req);
     Task<HttpResponsePtr> known_security_txt(HttpRequestPtr req);
+    Task<HttpResponsePtr> known_perma_redirects(HttpRequestPtr req);
 
 	METHOD_LIST_BEGIN
     METHOD_ADD(v1::known_hosts, "/known_hosts", {Get});
     METHOD_ADD(v1::known_feeds, "/known_feeds", {Get});
     METHOD_ADD(v1::known_security_txt, "/known_security_txt", {Get});
+    METHOD_ADD(v1::known_perma_redirects, "/known_perma_redirects", {Get});
     METHOD_LIST_END
 };
 }
@@ -98,6 +100,29 @@ Task<HttpResponsePtr> api::v1::known_security_txt(HttpRequestPtr req)
     co_await sleepCoro(app().getLoop(), 0.75);
     auto resp = HttpResponse::newHttpResponse();
     resp->setBody(security_txt->dump());
+    resp->setContentTypeCode(CT_APPLICATION_JSON);
+    co_return resp;
+}
+
+Task<HttpResponsePtr> api::v1::known_perma_redirects(HttpRequestPtr req)
+{
+    static CacheMap<std::string, std::shared_ptr<nlohmann::json>> cache(app().getLoop(), 600);
+    std::shared_ptr<nlohmann::json> perma_redirects;
+    if(cache.findAndFetch("perma_redirects", perma_redirects) == false ) {
+        auto db = app().getDbClient();
+        auto known_perma_redirects = co_await db->execSqlCoro("SELECT from_url, to_url FROM perma_redirects");
+        perma_redirects = std::make_shared<nlohmann::json>();
+        for(auto& redirect : known_perma_redirects) {
+            perma_redirects->push_back({
+                {"from_url", redirect["from_url"].template as<std::string>()},
+                {"to_url", redirect["to_url"].template as<std::string>()}
+            });
+        }
+        cache.insert("perma_redirects", perma_redirects, 3600*8);
+    }
+    co_await sleepCoro(app().getLoop(), 0.75);
+    auto resp = HttpResponse::newHttpResponse();
+    resp->setBody(perma_redirects->dump());
     resp->setContentTypeCode(CT_APPLICATION_JSON);
     co_return resp;
 }

@@ -19,3 +19,7 @@ Supported formats: atom, rss, twtxt, gemsub
 => /api/v1/known_secutity_txt
 
  [WIP] Sends back a list of known security.txt (RFC9116) files. These file include contact information for the host in case of a security issue. The list provided are files accessible by the TLGS crawler. i.e. Not blocked by robots.txt not not in a capsule that TLGS blacklists.
+
+=> /api/v1/known_perma_redirects
+
+Sends back a list of known permanent redirects (Gemini status code 31). To potentially allow new archivers and search engines to quickly bootstrap their index instead of wasting time following redirects.
