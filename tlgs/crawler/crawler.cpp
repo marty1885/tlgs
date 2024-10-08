@@ -449,7 +449,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                     title = url.str();
             }
             else if(mime == "text/plain" || mime == "plaintext" || mime == "text/markdown" || mime == "text/x-rst") {
-                if(url.path().ends_with("twtxt.txt"))
+                if(url.path().ends_with("/twtxt.txt"))
                     feed_type = "twtxt";
                 title = url.str();
                 body = std::move(body_raw);

@@ -15,7 +15,7 @@ I saw gemi.dev's post about Kennedy adding intitle: and site: modifiers. TLGS al
 
 For example
 
-=> gemini://tlgs.one/search?intitle=meow
+=> gemini://tlgs.one/search?intitle:meow
 
 ### 2023-06-18 XSS Vulnerability fix when displaying gemtext in HTML
 

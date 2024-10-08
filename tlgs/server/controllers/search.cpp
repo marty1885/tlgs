@@ -557,6 +557,7 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
     // 1. The two pages lives on the same host
     // 2. The two pages have the same path
     // 3. We can replace /~ with /users or /user and resulting URL is the same
+    // 4. Tailing / can be removed from the URL yet have the same result
     //
     // It works by storing using the hash as the key and looks up other nodes with the same hash. Then decide if 
     // we should merge or not.
@@ -589,6 +590,8 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
         drogon::utils::replaceAll(str, "/~", token);
         drogon::utils::replaceAll(str, "/users", token);
         drogon::utils::replaceAll(str, "/user", token);
+        if(str.ends_with("/"))
+            str.pop_back();
         bool replaced = false;
         for(auto& [_, stored] : std::ranges::subrange(begin, end)) {
             tlgs::Url stored_url(stored->url);
