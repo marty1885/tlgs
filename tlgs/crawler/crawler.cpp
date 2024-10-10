@@ -398,6 +398,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             }
         } while(status / 10 == 3 && redirection_count++ < 5);
 
+        if(resp == nullptr)
+            throw std::runtime_error("No concrete response. Too many redirects?");
+
         const auto& meta = resp->getHeader("meta");
         std::string mime;
         std::optional<std::string> charset;
