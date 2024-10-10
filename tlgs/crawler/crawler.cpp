@@ -178,7 +178,7 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
     LOG_TRACE << "Cannot find " << cache_key << " in local policy cache";
     auto db = app().getDbClient();
     auto policy_status = co_await db->execSqlCoro("SELECT have_policy FROM robot_policies_status "
-        "WHERE host = $1 AND port = $2 AND last_crawled_at > CURRENT_TIMESTAMP - INTERVAL '7' DAY", url.host(), url.port());
+        "WHERE host = $1 AND port = $2 AND last_crawled_at > CURRENT_TIMESTAMP - INTERVAL '2' DAY", url.host(), url.port());
     if(policy_status.size() == 0) {
         LOG_TRACE << url.hostWithPort(1965) << " has no up to date robots policy stored in DB. Asking the host for robots.txt";
         HttpResponsePtr resp;
