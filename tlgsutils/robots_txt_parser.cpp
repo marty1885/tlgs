@@ -17,7 +17,7 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
     static const std::regex line_re(R"([ \t]*(.*):[ \t]*(.*))");
     std::smatch match;
     std::string line;
-    bool care = false;
+    bool care = true;
     bool last_line_user_agent = false;
     while(std::getline(ss, line)) {
         if(!std::regex_match(line, match, line_re))

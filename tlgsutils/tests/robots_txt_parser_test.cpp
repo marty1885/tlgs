@@ -115,6 +115,13 @@ DROGON_TEST(RobotTextTest)
     disallowed = tlgs::parseRobotsTxt(robots, {"indexer", "*"});
     REQUIRE(disallowed.size() == 1);
     REQUIRE(disallowed[0] == "/test");
+
+    // Default user-agent should be *
+    robots = 
+        "Disallow: /foo\n";
+    disallowed = tlgs::parseRobotsTxt(robots, {"indexer"});
+    REQUIRE(disallowed.size() == 1);
+    CHECK(disallowed[0] == "/foo");
 }
 
 DROGON_TEST(BlockedPathTest)
