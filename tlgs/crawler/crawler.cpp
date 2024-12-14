@@ -481,6 +481,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 , url.str());
             co_return false;
         }
+        // safeguard in case title is too long for Postgres
+        if(title.size() > 1000)
+            title = title.substr(0, 1000) + "...";
 
         auto new_indexed_content_hash = tlgs::xxHash64(body);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
