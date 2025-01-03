@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2025-01-03 Crawler improvements
+
+The crawler uses to OOM postgres for no apparent reason. I've added a few more checks and eventually figured some malformed Gemtext is causing the indexer to go haywire. I've fixed the issue and ran several full crawls without any issues. We are back on stable ground.
+
 ### 2024-10-06 Crawler improvements
 
 It has been a while since I did any update to the search engine. This time 2 minor chages to the crawler:
