@@ -295,6 +295,8 @@ bool inBlacklist(const std::string& url_str)
         return true;
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
+    if(url.str().ends_with("/git.sh"))
+        return true;
     // LEO (Low Earth Orbit) webring. These affect how well ranking works
     if(url.path().ends_with("/next.cgi") || url.path().ends_with("/prev.cgi") || url.path().ends_with("/rand.cgi"))
         return true;
