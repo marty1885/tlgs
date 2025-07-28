@@ -256,6 +256,8 @@ bool inBlacklist(const std::string& url_str)
 
         // meta info from search engines
         "gemini://kennedy.gemi.dev/page-info?id=",
+        "gemini://gemi.dev/xkcd",
+        "gemini://gemi.dev/cgi-bin/",
 
         // Large book archive and causing OOM 
         "gemini://gemlog.stargrave.org/",
@@ -296,6 +298,11 @@ bool inBlacklist(const std::string& url_str)
     if(url.str().find(".git/blob/") != std::string::npos)
         return true;
     if(url.str().ends_with("/git.sh"))
+        return true;
+    // XKCD archives
+    if(url.str().find("/~xkcd/") != std::string::npos)
+        return true;
+    if(url.str().find("/xkcd/") != std::string::npos)
         return true;
     // LEO (Low Earth Orbit) webring. These affect how well ranking works
     if(url.path().ends_with("/next.cgi") || url.path().ends_with("/prev.cgi") || url.path().ends_with("/rand.cgi"))
