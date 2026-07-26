@@ -133,6 +133,8 @@ DROGON_TEST(NonUriActionTest)
   CHECK(tlgs::isNonUriAction("javascript:void(2)") == true);
   CHECK(tlgs::isNonUriAction("mailto:tom@example.com") == true);
   CHECK(tlgs::isNonUriAction("gemini://localhost") == false);
+  CHECK(tlgs::isNonUriAction("relative/page.gmi") == false);
+  CHECK(tlgs::isNonUriAction("/absolute/page.gmi") == false);
 }
 
 DROGON_TEST(PgSQLEscape)

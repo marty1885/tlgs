@@ -111,6 +111,8 @@ bool tlgs::isNonUriAction(const std::string& str)
     if(n != std::string::npos)
         return false;
     n = str.find(":");
+    if(n == std::string::npos)
+        return false;
     for(size_t i = 0; i < n; i++) {
         if(isalpha(str[i]) == false)
             return false;
