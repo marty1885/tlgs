@@ -103,6 +103,10 @@ DROGON_TEST(UrlParserTest)
     CHECK(url.path() == "/123456");
     CHECK(url.str() == "//smol.pub/123456");
 
+    url.withProtocol("gemini");
+    CHECK(url.port() == 1965);
+    CHECK(url.str() == "gemini://smol.pub/123456");
+
     url = tlgs::Url("://");
     CHECK(url.good() == false);
 

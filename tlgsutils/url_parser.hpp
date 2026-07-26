@@ -80,7 +80,7 @@ protected:
     std::string param_;
     std::string fragment_;
     bool good_ = true;
-    int default_port_;
+    int default_port_ = 0;
     mutable std::string cache_;
 };
 

@@ -74,15 +74,29 @@ static std::pair<std::string, std::unordered_map<std::string, std::string>> pars
     if(idx == mime.size())
         return {mime_str, params};
     while(idx < mime.size()) {
-        do {idx++;} while(idx < mime.size() && (mime[idx] == ' ' || mime[idx] == '\t'));
-        size_t key_begin = idx;
-        do {idx++;} while(idx < mime.size() && mime[idx] != '=');
-        size_t key_end = idx;
-        do {idx++;} while(idx < mime.size() && mime[idx] != ';' );
-        size_t value_end = idx;
-        std::string key(mime.data()+key_begin, key_end-key_begin);
-        std::string value(mime.data()+key_end+1, value_end-key_end-1);
-        params[key] = value;
+        ++idx; // Skip the separator from the previous parameter.
+        while(idx < mime.size() && (mime[idx] == ' ' || mime[idx] == '\t'))
+            ++idx;
+        if(idx == mime.size())
+            break;
+
+        const size_t key_begin = idx;
+        const size_t key_end = mime.find('=', key_begin);
+        const size_t parameter_end = mime.find(';', key_begin);
+        if(key_end == std::string::npos || (parameter_end != std::string::npos && key_end > parameter_end)) {
+            if(parameter_end == std::string::npos)
+                break;
+            idx = parameter_end;
+            continue;
+        }
+
+        const size_t value_begin = key_end + 1;
+        const size_t value_end = mime.find(';', value_begin);
+        if(key_end != key_begin)
+            params[mime.substr(key_begin, key_end - key_begin)] = mime.substr(value_begin, value_end - value_begin);
+        if(value_end == std::string::npos)
+            break;
+        idx = value_end;
     }
     return {mime_str, params};
 }
@@ -200,10 +214,16 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         }
 
         assert(resp != nullptr);
-        auto [mime, _] = parseMime(resp->contentTypeString());
-        int status = std::stoi(resp->getHeader("gemini-status"));
-        // HACK: Some capsules have broken MIME
-        bool have_robots_txt = status == 20 && (mime == "text/plain" || mime == "text/gemini");
+        const auto status = tlgs::try_strtoull(resp->getHeader("gemini-status"));
+        bool have_robots_txt = false;
+        if(!status || *status > 99) {
+            LOG_WARN << "Invalid Gemini status while fetching robots.txt from " << url.hostWithPort(1965);
+        }
+        else {
+            auto [mime, _] = parseMime(resp->contentTypeString());
+            // HACK: Some capsules have broken MIME
+            have_robots_txt = *status == 20 && (mime == "text/plain" || mime == "text/gemini");
+        }
         if(have_robots_txt) {
             disallowed_path = tlgs::parseRobotsTxt(std::string(resp->body()), {"*", "tlgs", "indexer"});
         }

@@ -166,6 +166,7 @@ Url& Url::withProtocol(const std::string& new_protocol)
 {
     cache_.clear();
     protocol_ = new_protocol;
+    default_port_ = protocolDefaultPort(protocol_);
     return *this;
 }
 

@@ -65,6 +65,11 @@ class converter {
   }
 
   void convert(const std::string_view& input, std::string& output) const {
+    if (input.empty()) {
+      output.clear();
+      return;
+    }
+
     // copy the string to a buffer as iconv function requires a non-const char
     // pointer.
     std::vector<char> in_buf(input.begin(), input.end());
