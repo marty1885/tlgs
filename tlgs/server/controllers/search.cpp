@@ -436,12 +436,15 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
     auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
     constexpr size_t max_root_set_size = 1000;
-    auto nodes_of_intrest = co_await db->execSqlCoro("WITH roots AS MATERIALIZED ("
-        "SELECT url, ts_rank_cd(title_vector, plainto_tsquery($1))*50 + ts_rank_cd(search_vector, plainto_tsquery($1)) AS rank "
-        "FROM pages WHERE search_vector @@ plainto_tsquery($1) ORDER BY rank DESC LIMIT $2"
+    constexpr size_t max_rank_candidates = 10000;
+    auto nodes_of_intrest = co_await db->execSqlCoro("WITH candidates AS MATERIALIZED ("
+        "SELECT url FROM pages WHERE search_vector @@ plainto_tsquery($1) LIMIT $2"
+        "), roots AS MATERIALIZED ("
+        "SELECT pages.url, ts_rank_cd(title_vector, plainto_tsquery($1))*50 + ts_rank_cd(search_vector, plainto_tsquery($1)) AS rank "
+        "FROM pages JOIN candidates ON pages.url = candidates.url ORDER BY rank DESC LIMIT $3"
         ") SELECT roots.url AS source_url, pages.cross_site_links, pages.content_type, pages.size, "
         "pages.indexed_content_hash AS content_hash, roots.rank FROM roots JOIN pages ON pages.url = roots.url "
-        "ORDER BY roots.rank DESC;", query_str, max_root_set_size);
+        "ORDER BY roots.rank DESC;", query_str, max_rank_candidates, max_root_set_size);
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
         co_return {};
