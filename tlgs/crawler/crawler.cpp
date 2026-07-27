@@ -31,18 +31,6 @@ using namespace drogon;
 using namespace dremini;
 using namespace trantor;
 
-static std::string pgSQLRealEscape(std::string str)
-{
-    drogon::utils::replaceAll(str, "\\", "\\\\");
-    drogon::utils::replaceAll(str, std::string(1, '\0'), "\\0");
-    drogon::utils::replaceAll(str, "\n", "\\n");
-    drogon::utils::replaceAll(str, "\r", "\\r");
-    drogon::utils::replaceAll(str, "'", "''");
-    drogon::utils::replaceAll(str, "\"", "\\\"");
-    drogon::utils::replaceAll(str, "\x1a", "\\Z");
-    return str;
-}
-
 static std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
 {
     // still perform conversion event if source encoding is the same as destination encoding
@@ -567,43 +555,50 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             });
 
         // TODO: Guess the language of the content. Then index them with different parsers
+        auto index_friendly_url = indexFriendly(url);
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
-            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14 WHERE url = $1;",
+            "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14, "
+            "search_vector = to_tsvector(REPLACE($9, '.', ' ') || ' ' || $15 || ' ' || $2), "
+            "title_vector = to_tsvector(REPLACE($9, '.', ' ') || ' ' || $15), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
-            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type);
-
-        // Full text index update
-        auto index_firendly_url = indexFriendly(url);
-        co_await db->execSqlCoro("UPDATE pages SET search_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2 || ' ' || content_body), "
-            "title_vector = to_tsvector(REPLACE(title, '.', ' ') || ' ' || $2), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;"
-            , url.str(), index_firendly_url);
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type, index_friendly_url);
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
             co_return true;
 
-        // Update link formation
-        // XXX: Drogon does not support bulk insert API. We have to do with string concatenation (with proper escaping)
-        std::string link_query = "INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) VALUES ";
-        std::string page_query = "INSERT INTO pages (url, domain_name, port, first_seen_at) VALUES ";
-        size_t page_count = 0;
+        // Update link formation. JSON recordsets keep the bulk insert parameterized.
+        nlohmann::json link_rows = nlohmann::json::array();
+        nlohmann::json page_rows = nlohmann::json::array();
         for(const auto& link_url : link_urls) {
             bool is_cross_site = link_url.host() != url.host() || url.port() != link_url.port();
-
-            link_query += fmt::format("('{}', '{}', {}, '{}', {}, '{}', {}), ",
-                pgSQLRealEscape(url.str()), pgSQLRealEscape(url.host()), url.port(), pgSQLRealEscape(link_url.str()),
-                is_cross_site, pgSQLRealEscape(link_url.host()), link_url.port());
+            link_rows.push_back({
+                {"to_url", link_url.str()},
+                {"is_cross_site", is_cross_site},
+                {"to_host", link_url.host()},
+                {"to_port", link_url.port()}
+            });
 
             if(co_await shouldCrawl(link_url.str()) == false)
                 continue;
-            page_query += fmt::format("('{}', '{}', {}, CURRENT_TIMESTAMP), ",
-                pgSQLRealEscape(link_url.str()), pgSQLRealEscape(link_url.host()), link_url.port());
-            page_count++;
+            page_rows.push_back({
+                {"url", link_url.str()},
+                {"domain_name", link_url.host()},
+                {"port", link_url.port()}
+            });
         }
 
-        co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
-        co_await db->execSqlCoro(link_query.substr(0, link_query.size() - 2) + " ON CONFLICT DO NOTHING;");
-        if(page_count != 0)
-            co_await db->execSqlCoro(page_query.substr(0, page_query.size() - 2) + " ON CONFLICT DO NOTHING;");
+        auto transaction = co_await db->newTransactionCoro();
+        co_await transaction->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
+        co_await transaction->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
+            "SELECT $1, $2, $3, link.to_url, link.is_cross_site, link.to_host, link.to_port "
+            "FROM jsonb_to_recordset($4::jsonb) AS link(to_url text, is_cross_site boolean, to_host text, to_port integer) "
+            "ON CONFLICT DO NOTHING;", url.str(), url.host(), url.port(), link_rows.dump());
+        if(!page_rows.empty()) {
+            co_await transaction->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
+                "SELECT page.url, page.domain_name, page.port, CURRENT_TIMESTAMP "
+                "FROM jsonb_to_recordset($1::jsonb) AS page(url text, domain_name text, port integer) "
+                "ON CONFLICT DO NOTHING;", page_rows.dump());
+        }
     }
     catch(std::exception& e) {
         error = e.what();

@@ -81,6 +81,9 @@ Task<> createDb()
 			PRIMARY KEY (from_url)
 		);
 	)");
+	co_await db->execSqlCoro(R"(
+                CEATE INDEX CONCURRENTLY IF NOT EXISTS pages_crawl_queue_idx ON pages (last_queued_at, last_crawled_at) WHERE last_crawled_at IS NULL OR last_queued_at IS NULL;
+	)");
 	app().quit();
 }
 
