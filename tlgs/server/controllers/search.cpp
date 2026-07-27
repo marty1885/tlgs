@@ -442,14 +442,18 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
         ") SELECT roots.url AS source_url, pages.cross_site_links, pages.content_type, pages.size, "
         "pages.indexed_content_hash AS content_hash, roots.rank FROM roots JOIN pages ON pages.url = roots.url "
         "ORDER BY roots.rank DESC;", query_str, max_root_set_size);
-    auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
-        "indexed_content_hash AS content_hash, 0 AS rank FROM pages JOIN links ON pages.url=links.to_url "
-        "WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
-        , query_str);
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
         co_return {};
     }
+
+    nlohmann::json root_urls = nlohmann::json::array();
+    for(const auto& node : nodes_of_intrest)
+        root_urls.push_back(node["source_url"].as<std::string>());
+    auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
+        "indexed_content_hash AS content_hash, 0 AS rank FROM pages JOIN links ON pages.url=links.to_url "
+        "JOIN jsonb_array_elements_text($1::jsonb) AS roots(url) ON pages.url = roots.url "
+        "WHERE links.is_cross_site = TRUE;", root_urls.dump());
     auto sql_end = std::chrono::high_resolution_clock::now();
 
     std::unordered_map<std::string, size_t> node_table;
