@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2026-07-27 I'm back
+
+After a long time off the Gemini space I am back. It seems the Geminispace has grown a lot and the performance of TLGS' search is not catching up with it leading to some search timeouts. Oops.. Patched the database queries a bit and some changes to the cralwer... it should work better now. I still need to rework the DB to ensure it scales as Gemini grows. But for now it works well enough.
+
 ### 2025-01-03 Crawler improvements
 
 The crawler uses to OOM postgres for no apparent reason. I've added a few more checks and eventually figured some malformed Gemtext is causing the indexer to go haywire. I've fixed the issue and ran several full crawls without any issues. We are back on stable ground.
