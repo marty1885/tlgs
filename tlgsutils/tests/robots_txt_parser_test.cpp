@@ -150,6 +150,13 @@ DROGON_TEST(BlockedPathTest)
     CHECK(tlgs::isPathBlocked("/foo/123/bar/baz", "/foo/*/bar/*") == true);
     CHECK(tlgs::isPathBlocked("/foo", "/***") == true);
 
+    // Rules too complex for safe regex evaluation remain disallowed within
+    // their literal prefix instead of causing a backtracking explosion.
+    const std::string complex_rule = "/private/*a*b*c*d*e*f*g*h*i*";
+    CHECK(tlgs::isPathBlocked("/private/document", complex_rule) == true);
+    CHECK(tlgs::isPathBlocked("/public/document", complex_rule) == false);
+    CHECK(tlgs::isPathBlocked("/anything", "*a*b*c*d*e*f*g*h*i*") == true);
+
     // Check special regex characters are escaped
     CHECK(tlgs::isPathBlocked("/foo/(", "/foo/(") == true);
     CHECK(tlgs::isPathBlocked("/*/asd/*/.mp3", "/foo/asd/bar/1mp3") == false);

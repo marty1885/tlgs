@@ -399,6 +399,8 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             }
             // 2.5MB is the maximum size of page we will index. 10s timeout, max 5 redirects and 25s max transfer time.
             resp = co_await dremini::sendRequestCoro(crawl_url.str(), 10, loop_, 0x2625a0, indexd_mimes, 25.0);
+            if(resp == nullptr)
+                throw std::runtime_error("No response from Gemini server");
 
             status = std::stoi(resp->getHeader("gemini-status"));
             if(status / 10 == 3) {

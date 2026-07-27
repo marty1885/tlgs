@@ -75,6 +75,15 @@ static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
             || (str.size() > pattern.size()+1 && str.starts_with(pattern) && (str[pattern.size()] == '/' || pattern.back() == '/'));
     }
 
+    // Repeated `.*` expressions can make std::regex use exponential time and
+    // overflow its call stack. Preserve the unambiguous literal prefix, then
+    // conservatively honor an over-complex disallow rule within that prefix.
+    constexpr size_t max_regex_wildcards = 8;
+    if(star_count > max_regex_wildcards) {
+        const auto first_star = pattern.find('*');
+        return first_star == 0 || str.starts_with(pattern.substr(0, first_star));
+    }
+
     if(pattern.back() == '$' && (pattern.starts_with("*") || pattern.starts_with("/*")))
         pattern.pop_back();
 
@@ -96,8 +105,10 @@ static bool wildcardPathMatch(std::string pattern, const std::string_view& str)
     
     // Now * must be in the middle.
     auto n = pattern.find("*");
-    if(n != std::string_view::npos && star_count == 1)
-        return str.starts_with(pattern.substr(0, n)) && str.rfind(pattern.substr(n+1)) > n;
+    if(n != std::string_view::npos && star_count == 1) {
+        const auto suffix_pos = str.rfind(pattern.substr(n+1));
+        return str.starts_with(pattern.substr(0, n)) && suffix_pos != std::string_view::npos && suffix_pos >= n;
+    }
     
     // Else we convert the pattern to a regex and try to match
     std::string regex_pattern;
