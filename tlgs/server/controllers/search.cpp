@@ -436,15 +436,13 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
     auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
     constexpr size_t max_root_set_size = 5000;
-    auto nodes_of_intrest = co_await db->execSqlCoro("WITH search_query AS MATERIALIZED (SELECT plainto_tsquery($1) AS terms) "
-        "SELECT url as source_url, cross_site_links, content_type, size, indexed_content_hash AS content_hash, "
-        "ts_rank_cd(pages.title_vector, search_query.terms)*50 + ts_rank_cd(pages.search_vector, search_query.terms) AS rank "
-        "FROM pages CROSS JOIN search_query WHERE pages.search_vector @@ search_query.terms "
+    auto nodes_of_intrest = co_await db->execSqlCoro("SELECT url as source_url, cross_site_links, content_type, size, indexed_content_hash AS content_hash, "
+        "ts_rank_cd(pages.title_vector, plainto_tsquery($1))*50 + ts_rank_cd(pages.search_vector, plainto_tsquery($1)) AS rank "
+        "FROM pages WHERE pages.search_vector @@ plainto_tsquery($1) "
         "ORDER BY rank DESC LIMIT $2;", query_str, max_root_set_size);
-    auto links_to_node = co_await db->execSqlCoro("WITH search_query AS MATERIALIZED (SELECT plainto_tsquery($1) AS terms) "
-        "SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
+    auto links_to_node = co_await db->execSqlCoro("SELECT links.to_url AS dest_url, links.url AS source_url, content_type, size, "
         "indexed_content_hash AS content_hash, 0 AS rank FROM pages JOIN links ON pages.url=links.to_url "
-        "CROSS JOIN search_query WHERE links.is_cross_site = TRUE AND pages.search_vector @@ search_query.terms"
+        "WHERE links.is_cross_site = TRUE AND pages.search_vector @@ plainto_tsquery($1)"
         , query_str);
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
