@@ -7,6 +7,7 @@
 #define LLUNVEIL_USE_UNVEIL
 #include <llunveil.h>
 #endif
+#include <unistd.h>
 
 #include "search_result.hpp"
 

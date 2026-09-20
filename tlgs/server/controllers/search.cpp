@@ -1179,8 +1179,12 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
         float rank = text_rank[i];
         // discourage pages too large
         const size_t discourage_size = 48*1000; // 48KB
-        if(node.size > discourage_size)
-            rank *= 1/log(std::numbers::e+(node.size - discourage_size)/(1000*3));
+        if(node.size > discourage_size) {
+		rank *= 1.0 / std::log(
+		    std::exp(1.0) +
+		    (node.size - discourage_size) / 3000.0
+		);
+	}
         node.score = 2*(boost * rank) / (boost + rank);
     }
 
