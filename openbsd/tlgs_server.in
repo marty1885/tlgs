@@ -1,0 +1,25 @@
+#!/bin/ksh
+
+daemon="@CMAKE_INSTALL_FULL_BINDIR@/tlgs_server /etc/tlgs/server_config.json"
+daemon_user="_tlgs"
+daemon_execdir="/var/tlgs"
+daemon_logger="daemon.info"
+
+. /etc/rc.d/rc.subr
+
+rc_bg=YES
+rc_reload=NO
+
+rc_pre() {
+	if [[ ! -d ${daemon_execdir} || ! -d /var/tlgs/uploads ]]; then
+		echo "${daemon_execdir} and /var/tlgs/uploads must exist" >&2
+		return 1
+	fi
+	if ! /usr/bin/su -s /bin/ksh "${daemon_user}" -c \
+	    "test -w '${daemon_execdir}' && test -w /var/tlgs/uploads"; then
+		echo "${daemon_execdir} and /var/tlgs/uploads must be writable by ${daemon_user}" >&2
+		return 1
+	fi
+}
+
+rc_cmd $1

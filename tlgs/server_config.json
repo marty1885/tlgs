@@ -1,6 +1,7 @@
 {
 	"app":{
-		"document_root": "./contents",
+		"document_root": "/etc/tlgs/contents",
+		"upload_path": "/var/tlgs/uploads",
 		"file_types": [
 			"gif",
 			"png",
@@ -23,7 +24,7 @@
 		"mime": {
 			"text/gemini": ["gmi", "gemini"]
 		},
-		"handle_sig_term": false
+		"handle_sig_term": true
 	},
 	"plugins": [
 		{

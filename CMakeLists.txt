@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 project(tlgs)
 
+include(GNUInstallDirs)
+
 option(TLGS_BUILD_TESTS "Build TLGS tests" ON)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -37,6 +39,11 @@ add_subdirectory(tlgs)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES systemd/tlgs_crawler.service systemd/tlgs_crawler.timer systemd/tlgs_server.service DESTINATION /etc/systemd/)
     install(FILES systemd/tlgs.conf DESTINATION lib/sysuser.d)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+    configure_file(openbsd/tlgs_server.in tlgs_server.rc @ONLY)
+    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/tlgs_server.rc"
+            DESTINATION /etc/rc.d
+            RENAME tlgs_server)
 endif()
 
 include(Package.cmake)

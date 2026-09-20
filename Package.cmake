@@ -1,5 +1,3 @@
-include(GNUInstallDirs)
-
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_CONTACT "https://github.com/marty1885/tlgs")
 

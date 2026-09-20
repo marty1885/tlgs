@@ -104,6 +104,37 @@ sudo systemctl start tlgs_server
 sudo systemctl start tlgs_crawler
 ```
 
+### Via OpenBSD rc
+
+On OpenBSD, installation places an `rc.d(8)` script at `/etc/rc.d/tlgs_server`. Other data and service account needs to be creatred, install TLGS, and enable the server:
+
+```sh
+doas useradd -c "TLGS service account" -d /var/empty -s /sbin/nologin _tlgs
+doas install -d -o _tlgs -g _tlgs -m 0750 /var/tlgs
+doas install -d -o _tlgs -g _tlgs -m 0750 /var/tlgs/uploads
+doas cmake --install build
+doas rcctl enable tlgs_server
+doas rcctl start tlgs_server
+```
+The service runs as `_tlgs`, changes directory to the writable runtime directory `/var/tlgs`, and sends its output to syslog with the `daemon.info` priority. Static content lives in  `/etc/tlgs/contents` and Drogon's upload scratch pad is `/var/tlgs/uploads`. Otherwise the framework may refuse to initialize.
+
+Standard commands available through `rcctl`:
+
+```sh
+doas rcctl check tlgs_server
+doas rcctl restart tlgs_server
+doas rcctl stop tlgs_server
+```
+
+Edit `/etc/tlgs/server_config.json` before the first start. The `_tlgs` user must be able to read the configured TLS certificate and key and connect to the
+configured PostgreSQL database.
+
+`tlgs_crawler` is a finite job thus (unlike under systemd) is not a part of RC daemons. Run it manually as `_tlgs`, or invoke it from `/etc/daily.local` for a daily update:
+
+```sh
+doas -u _tlgs /usr/local/bin/tlgs_crawler /etc/tlgs/config.json
+```
+
 ## Server config
 
 The `custom_config.tlgs` section in `search_config.json` (installed at `/etc/tlgs/server_config.json`) contains confgurations for TLGS server. Besides the usual [Drogon's config options](https://drogon.docsforge.com/master/configuration-file/). custom_config changes the property of TLGS itself. Current supported options are:
