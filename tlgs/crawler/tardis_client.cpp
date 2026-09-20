@@ -133,7 +133,11 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
         batch = nextBatch == manifest.end() || nextBatch->is_null() ? "" : nextBatch->get<std::string>();
     }
     for(const auto &entry : update.at("results")) {
-        TardisCapture capture{.url = entry.at("url").get<std::string>(), .status = entry.at("status_code").get<int>(), .meta = entry.value("meta", "")};
+        // A failed crawl can have no Gemini response at all.  TARDIS then
+        // omits status_code and supplies only its failure metadata.  Preserve
+        // that as status 0 so the crawler records the failure instead of
+        // aborting the whole incremental-sync window.
+        TardisCapture capture{.url = entry.at("url").get<std::string>(), .status = entry.value("status_code", 0), .meta = entry.value("meta", "")};
         if(const auto body = bodies.find(capture.url); body != bodies.end()) {
             capture.body = body->second;
             capture.hasBody = true;

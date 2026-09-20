@@ -102,7 +102,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
     // `mime_types` was the pre-body-filter configuration.  Retain it as a
     // fallback so existing deployments keep their previous behaviour.
     const auto change_mimes = config.get("change_mime_types",
-        config.get("mime_types", "text/gemini,text/plain,text/markdown,text/x-rst,plaintext")).asString();
+        config.get("mime_types", "text/gemini,text/plain,text/markdown,text/x-rst")).asString();
     const auto body_mimes = config.get("body_mime_types", change_mimes).asString();
     auto db = app().getDbClient();
     co_await db->execSqlCoro("CREATE TABLE IF NOT EXISTS crawler_sync_state (source text PRIMARY KEY, last_full_sync_unix_millis bigint NOT NULL DEFAULT 0, window_since bigint, window_till bigint, resume_token text);");
