@@ -1,11 +1,13 @@
-add_library(tlgsutils gemini_parser.cpp robots_txt_parser.cpp url_parser.cpp utils.cpp)
-target_link_libraries(tlgsutils PUBLIC Drogon::Drogon dremini xxhash)
+find_package(toml11 REQUIRED)
+add_library(tlgsutils gemini_parser.cpp robots_txt_parser.cpp site_identity.cpp url_parser.cpp utils.cpp)
+target_link_libraries(tlgsutils PUBLIC Drogon::Drogon dremini xxhash toml11::toml11)
 target_compile_features(tlgsutils PRIVATE cxx_std_20)
 
 if(TLGS_BUILD_TESTS)
     add_executable(tlgsutils_test tests/main.cpp
         tests/gemini_parser_test.cpp
         tests/robots_txt_parser_test.cpp
+        tests/site_identity_test.cpp
         tests/url_parser_test.cpp
         tests/utils_test.cpp
         tests/url_blacklist_test.cpp)

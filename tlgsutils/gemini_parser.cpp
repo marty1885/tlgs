@@ -5,9 +5,85 @@
 #include <regex>
 #include <iostream>
 #include <sstream>
+#include <array>
 
 namespace tlgs
 {
+namespace
+{
+constexpr size_t max_qualifying_text_size = 4096;
+constexpr size_t max_search_field_size = 64 * 1024;
+constexpr size_t max_search_line_size = 2000;
+
+size_t utf8PrefixSize(const std::string_view text, const size_t maximum)
+{
+    size_t size = std::min(text.size(), maximum);
+    if(size == text.size())
+        return size;
+    while(size > 0 && (static_cast<unsigned char>(text[size]) & 0xc0) == 0x80)
+        --size;
+    return size;
+}
+
+void appendQualifier(std::string& qualifier, const std::string_view text)
+{
+    if(text.empty() || qualifier.size() >= max_qualifying_text_size)
+        return;
+    if(!qualifier.empty())
+        qualifier.push_back('\n');
+    const auto remaining = max_qualifying_text_size - qualifier.size();
+    qualifier.append(text.substr(0, remaining));
+}
+
+void appendLine(std::string& destination, const std::string_view text)
+{
+    if(text.empty() || destination.size() >= max_search_field_size)
+        return;
+    const auto available = max_search_field_size - destination.size() - 1;
+    destination.append(text.substr(0, utf8PrefixSize(text,
+        std::min(available, max_search_line_size))));
+    destination.push_back('\n');
+}
+
+std::vector<GeminiLink> extractRecommendations(
+    const std::vector<dremini::GeminiASTNode>& nodes,
+    const std::string_view title)
+{
+    std::vector<GeminiLink> recommendations;
+    std::array<std::string, 3> headings;
+    for(const auto& node : nodes) {
+        size_t heading_level = 0;
+        if(node.type == "heading1")
+            heading_level = 1;
+        else if(node.type == "heading2")
+            heading_level = 2;
+        else if(node.type == "heading3")
+            heading_level = 3;
+
+        if(heading_level != 0) {
+            headings[heading_level - 1] = node.text;
+            for(size_t i = heading_level; i < headings.size(); ++i)
+                headings[i].clear();
+            continue;
+        }
+        if(node.type != "link" || node.meta.empty())
+            continue;
+
+        GeminiLink recommendation;
+        recommendation.target = node.meta;
+        recommendation.label = node.text;
+        appendQualifier(recommendation.qualifying_text, title);
+        for(const auto& heading : headings) {
+            if(heading != title)
+                appendQualifier(recommendation.qualifying_text, heading);
+        }
+        appendQualifier(recommendation.qualifying_text, node.text);
+        recommendations.emplace_back(std::move(recommendation));
+    }
+    return recommendations;
+}
+}
+
 GeminiDocument extractGemini(const std::string_view sv)
 {
     return extractGemini(dremini::parseGemini(sv));
@@ -18,12 +94,21 @@ GeminiDocument extractGemini(const std::vector<dremini::GeminiASTNode>& nodes)
     GeminiDocument doc;
     doc.text.reserve(1024);
     for(const auto& node : nodes) {
-        doc.text += node.text + "\n";
-        if(node.type == "link")
+        if(node.type == "link") {
             doc.links.push_back(node.meta);
-        else if(node.type == "heading1" && doc.title.empty())
-            doc.title = node.text;
+            appendLine(doc.link_text, node.text);
+        }
+        else if(node.type == "heading1" || node.type == "heading2" || node.type == "heading3") {
+            if(node.type == "heading1" && doc.title.empty())
+                doc.title = node.text;
+            else
+                appendLine(doc.headings, node.text);
+        }
+        else
+            appendLine(doc.text, node.text);
     }
+
+    doc.recommendations = extractRecommendations(nodes, doc.title);
 
     return doc;
 }
@@ -87,13 +172,20 @@ GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& n
             if(node.text.find("│") < 3)
                 continue;
         }
-        doc.text += node.text + "\n";
         if(node.type == "link") {
             doc.links.push_back(node.meta);
+            appendLine(doc.link_text, node.text);
         }
-        else if(node.type == "heading1" && doc.title.empty())
-            doc.title = node.text;
+        else if(node.type == "heading1" || node.type == "heading2" || node.type == "heading3") {
+            if(node.type == "heading1" && doc.title.empty())
+                doc.title = node.text;
+            else
+                appendLine(doc.headings, node.text);
+        }
+        else
+            appendLine(doc.text, node.text);
     }
+    doc.recommendations = extractRecommendations(nodes, doc.title);
     return doc;
 }
 

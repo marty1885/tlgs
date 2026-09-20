@@ -2,7 +2,7 @@
 
 ## Overview
 
-TLGS is a search engine for Gemini. It's slightly overengineered for what it currently is and uses weird tech. And I'm proud of that. The current code basse is kinda messy - I promise to clean them up. The main features/characteristics are as follows:
+TLGS is a search engine for Gemini. It's slightly overengineered for what it currently is and uses weird tech. And I'm proud of that. The current code base is kinda messy - I promise to clean them up. The main features/characteristics are as follows:
 
 * Using the state of the art C++20
 * Parses and indexes textual contents on Gemninispace
@@ -11,7 +11,6 @@ TLGS is a search engine for Gemini. It's slightly overengineered for what it cur
 * Developed for Linux. But should work on Windows, OpenBSD, HaikuOS, macOS, etc..
 * Only fetch headers for files it can't index to save bandwith and time
 * Handles all kinds of source encoding
-* Link analysis using the SALSA algorithm
 
 As of now, indexing of news sites, RFCs, documentations are mostly disabled. But likely be enabled once I have the mean and resources to scale the setup.
 
@@ -25,6 +24,7 @@ As of now, indexing of news sites, RFCs, documentations are mostly disabled. But
 * [libfmt](https://github.com/fmtlib/fmt)
 * [TBB](https://github.com/oneapi-src/oneTBB)
 * [xxHash](https://github.com/Cyan4973/xxHash)
+* [toml11](https://github.com/ToruNiina/toml11)
 * iconv
 * PostgreSQL
 
@@ -46,20 +46,48 @@ make -j
 
 ### Creating and maintaining the index
 
-To create the inital index:
+TLGS imports the [TARDIS](gemini://tardis.northwire.xyz) incremental update feed. Configure the registered client certificate and key in `config.json` under `tardis`. The crawler automatically stores its completed full-sync timestamp and an in-progress stable feed window in PostgreSQL, so it resumes an interrupted daily run from the server-provided paging token.
+
+To create the initial index:
 
 1. Initialize the database `./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json populate_schema`
-2. Place the seed URLs into `seeds.text`
-3. In the build folder, run `./tlgs/crawler/tlgs_crawler -s seeds.text -c 4 ../tlgs/config.json`
+2. In the build folder, run `./tlgs/crawler/tlgs_crawler ../tlgs/config.json`
 
-Now the crawler will start crawling the geminispace while also updating outdated indices (if any). To update an existing index. Run: 
+To import later updates, run:
 
 ```bash
-./tlgs/crawler/tlgs_crawler -c 2 ../tlgs/config.json
-# -c is the maximum concurrent connections the crawler will make
+./tlgs/crawler/tlgs_crawler ../tlgs/config.json
 ```
 
-**NOTE:** TLGS's crawler is distributable. You can run multiple instances in parallel. But some intances may drop out early towards the end or crawling. Though it does not effect the result of crawling.
+### Logical site identity
+
+Shared hosts can contain independent Gemini capsules below paths such as `/~alice/` or `/user/alice/`. TLGS classifies URLs into logical sites using the ordered rules in `tlgs/site_identity_rules.toml`. The matcher DOES NOT speak regex to suruve potential Regex DoS
+
+Rules can be checked and applied to an already-ingested database without a recrawl:
+
+```bash
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules validate ../tlgs/site_identity_rules.toml
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules plan ../tlgs/site_identity_rules.toml
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules apply ../tlgs/site_identity_rules.toml
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules status
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules sync
+```
+
+`apply` builds a versioned URL mapping and switches the active ruleset only after the complete mapping has been verified. `sync` adds URLs discovered by later incremental crawls to the active mapping without creating a new ruleset version.
+
+A previous mapping can be reactivated atomically:
+
+```bash
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules rollback RULESET_ID
+```
+
+After ingesting or replacing a dataset, build the derived search data:
+
+```bash
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules apply ../tlgs/site_identity_rules.toml
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json search-index rebuild
+./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json search-index status
+```
 
 ### Running the capsule
 
@@ -81,31 +109,16 @@ sudo systemctl start tlgs_crawler
 The `custom_config.tlgs` section in `search_config.json` (installed at `/etc/tlgs/server_config.json`) contains confgurations for TLGS server. Besides the usual [Drogon's config options](https://drogon.docsforge.com/master/configuration-file/). custom_config changes the property of TLGS itself. Current supported options are:
 
 ### ranking_algo
-The ranking algorithm TLGS uses to rank pages in search result. The ranking is then combined with the text match score to produce the final search rank. Current supported values are `hits` and `salsa`. Refering to the [HITS][hits] and [SALSA][salsa] ranking algorithm. It defaults to `salsa` if no value is provided.
+The ranking algorithm TLGS uses to rank pages in search results. Current supported values are `hits`, `salsa`, and `fusion`. It defaults to `fusion` if no value is provided. `hits` and `salsa` are retained for controlled comparisons but construct a query-time graph and are not recommended for normal serving.
 
-SALSA runs slightly faster than HITS for large search results. Both [literature][najork2007comparing] and imperical experience suggests SALSA provides better ranking. Thus we switched from HITS to SALSA.
+`fusion` is a hand tuned FTS and Hilltop algorithm that imperically works and is much faster then SALSA/HITS + FTS but limited to 1000 results. The weight of FTS vs Hilltop defaults to `1.0` and can be adjusted in config. 
 
 ```json
-"ranking_algo": "salsa"
+"ranking_algo": "fusion",
+"fusion_graph_weight": 1.0,
+"fusion_site_decay": 0.5,
+"fusion_max_site_results_per_page": 2
 ```
-
-## TODOs
-
-- [ ] Code cleanup
-  - [ ] I really need to centralized the crawling logic
-- [x] Randomize the order of crawling. Avoid bashing a single capsule
-  * Sort of.. by sampling the pages table with low percentage and increase later
-- [ ] Support parsing markdown
-- [ ] Try indexing news sites
-- [ ] Optimize the crawler even more
-  - [x] Checks hash before updating index
-  - [ ] Peoper UTF-8 handling in ASCII art detection
-  - [x] Use a trie for blacklist URL match
-- [x] Link analysis using SALSA
-- [ ] BM25 for text scoring
-- [x] Dedeuplicate search result
-- [x] Impement Filters
-- [ ] Proper(?) way to migrate schema
 
 [hits]: http://www.cs.cornell.edu/home/kleinber/auth.pdf
 [salsa]: https://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.38.5859

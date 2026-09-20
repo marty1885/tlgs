@@ -11,11 +11,21 @@
 namespace tlgs
 {
 
+struct GeminiLink
+{
+    std::string target;
+    std::string label;
+    std::string qualifying_text;
+};
+
 struct GeminiDocument
 {
     std::string text;
     std::string title;
+    std::string headings;
+    std::string link_text;
     std::vector<std::string> links;
+    std::vector<GeminiLink> recommendations;
 };
 
 /**

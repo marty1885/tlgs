@@ -95,6 +95,11 @@ int main(int argc, char** argv)
         // Lockdown the server to only access the files in the document directory
         unveil(drogon::app().getDocumentRoot().c_str(), "r");
         unveil(drogon::app().getUploadPath().c_str(), "rwc");
+        const auto &tardis = drogon::app().getCustomConfig()["tardis"];
+        const auto certificate = tardis.get("certificate", "").asString();
+        const auto privateKey = tardis.get("private_key", "").asString();
+        if(!certificate.empty()) unveil(certificate.c_str(), "r");
+        if(!privateKey.empty()) unveil(privateKey.c_str(), "r");
         unveil(nullptr, nullptr);
         #endif
     });

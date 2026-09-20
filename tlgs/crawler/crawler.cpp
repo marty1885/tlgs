@@ -1,10 +1,11 @@
 #include "crawler.hpp"
 
 #include <atomic>
-#include <filesystem>
+#include <cstdint>
 #include <random>
 #include <stdexcept>
 #include <algorithm>
+#include <string_view>
 
 #include <nlohmann/json.hpp> 
 
@@ -24,12 +25,173 @@
 
 #include "iconv.hpp"
 #include "blacklist.hpp"
+#include "tardis_client.hpp"
 
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 using namespace drogon;
 using namespace dremini;
 using namespace trantor;
+
+namespace
+{
+bool isSqlExecutionTimeout(std::string_view error)
+{
+    return error.find("SQL execution timeout") != std::string_view::npos;
+}
+
+void truncateUtf8(std::string& text, const size_t maximum)
+{
+    if(text.size() <= maximum)
+        return;
+    size_t size = maximum;
+    while(size > 0 && (static_cast<unsigned char>(text[size]) & 0xc0) == 0x80)
+        --size;
+    text.resize(size);
+}
+
+std::string sampleUtf8(const std::string_view text, const size_t maximum)
+{
+    if(text.size() <= maximum)
+        return std::string(text);
+    if(maximum < 16) {
+        auto sample = std::string(text.substr(0, maximum));
+        truncateUtf8(sample, maximum);
+        return sample;
+    }
+
+    constexpr size_t chunk_count = 8;
+    const size_t separator_bytes = chunk_count - 1;
+    const size_t payload_bytes = maximum - separator_bytes;
+    const size_t base_chunk_size = payload_bytes / chunk_count;
+    const size_t extra_bytes = payload_bytes % chunk_count;
+
+    std::string sample;
+    sample.reserve(maximum);
+    for(size_t chunk = 0; chunk < chunk_count; ++chunk) {
+        const size_t chunk_size = base_chunk_size + (chunk < extra_bytes ? 1 : 0);
+        size_t start = chunk * (text.size() - chunk_size) / (chunk_count - 1);
+        while(start < text.size()
+              && (static_cast<unsigned char>(text[start]) & 0xc0) == 0x80)
+            ++start;
+
+        size_t end = std::min(start + chunk_size, text.size());
+        while(end > start && end < text.size()
+              && (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80)
+            --end;
+        if(!sample.empty())
+            sample.push_back('\n');
+        sample.append(text.substr(start, end - start));
+    }
+    return sample;
+}
+}
+
+GeminiCrawler::GeminiCrawler(EventLoop* loop) : loop_(loop) {}
+GeminiCrawler::~GeminiCrawler() = default;
+
+Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPages)
+{
+    const auto endpoint = config.get("endpoint", "gemini://tardis.northwire.xyz").asString();
+    const auto certificate = config["certificate"].asString();
+    const auto private_key = config["private_key"].asString();
+    if(certificate.empty() || private_key.empty())
+        throw std::runtime_error("tardis.certificate and tardis.private_key are required");
+    const auto mode = config.get("mode", "tlgs").asString();
+    const auto size = config.get("maximum_body_bytes", 2500000).asInt64();
+    const auto limit = static_cast<size_t>(config.get("page_size", 100).asUInt());
+    const auto mimes = config.get("mime_types", "text/gemini,text/plain,text/markdown").asString();
+    auto db = app().getDbClient();
+    co_await db->execSqlCoro("CREATE TABLE IF NOT EXISTS crawler_sync_state (source text PRIMARY KEY, last_full_sync_unix_millis bigint NOT NULL DEFAULT 0, window_since bigint, window_till bigint, resume_token text);");
+    auto state = co_await db->execSqlCoro("SELECT last_full_sync_unix_millis, window_since, window_till, resume_token FROM crawler_sync_state WHERE source = 'tardis';");
+    int64_t since = 0, till = trantor::Date::now().microSecondsSinceEpoch() / 1000;
+    std::string token;
+    if(!state.empty()) {
+        since = state[0]["last_full_sync_unix_millis"].as<int64_t>();
+        if(!state[0]["window_since"].isNull()) since = state[0]["window_since"].as<int64_t>();
+        if(!state[0]["window_till"].isNull()) till = state[0]["window_till"].as<int64_t>();
+        if(!state[0]["resume_token"].isNull()) token = state[0]["resume_token"].as<std::string>();
+    }
+    else co_await db->execSqlCoro("INSERT INTO crawler_sync_state(source, last_full_sync_unix_millis, window_since, window_till) VALUES ('tardis', 0, $1, $2);", since, till);
+    TardisClient client(loop_, endpoint, certificate, private_key, mode, size, limit, mimes);
+    size_t pages = 0;
+    while(true) {
+        auto page = co_await client.updates(since, till, token);
+        tardis_active_ = true;
+        ended_ = false;
+        for(auto &capture : page.captures) {
+            const auto url = capture.url;
+            tardis_captures_.emplace(url, std::move(capture));
+            craw_queue_.push(url);
+        }
+        co_await crawlAll();
+        if(page.hasMore) {
+            token = page.resumeToken;
+            co_await db->execSqlCoro("UPDATE crawler_sync_state SET window_since = $1, window_till = $2, resume_token = $3 WHERE source = 'tardis';", since, till, token);
+            if(maximumPages != 0 && ++pages >= maximumPages)
+                break;
+        }
+        else {
+            co_await db->execSqlCoro("UPDATE crawler_sync_state SET last_full_sync_unix_millis = $1, window_since = NULL, window_till = NULL, resume_token = NULL WHERE source = 'tardis';", till);
+            break;
+        }
+    }
+    tardis_active_ = false;
+    co_return;
+}
+
+static std::string sanitizeUtf8(const std::string_view input)
+{
+    std::string output;
+    output.reserve(input.size());
+    for(size_t i = 0; i < input.size();) {
+        const auto first = static_cast<unsigned char>(input[i]);
+        size_t length = 0;
+        uint32_t codepoint = 0;
+        uint32_t minimum = 0;
+        if(first < 0x80) {
+            if(first == 0)
+                output.append("\xef\xbf\xbd");
+            else
+                output.push_back(static_cast<char>(first));
+            ++i;
+            continue;
+        }
+        if((first & 0xe0) == 0xc0) {
+            length = 2;
+            codepoint = first & 0x1f;
+            minimum = 0x80;
+        }
+        else if((first & 0xf0) == 0xe0) {
+            length = 3;
+            codepoint = first & 0x0f;
+            minimum = 0x800;
+        }
+        else if((first & 0xf8) == 0xf0) {
+            length = 4;
+            codepoint = first & 0x07;
+            minimum = 0x10000;
+        }
+
+        bool valid = length != 0 && i + length <= input.size();
+        for(size_t offset = 1; valid && offset < length; ++offset) {
+            const auto next = static_cast<unsigned char>(input[i + offset]);
+            valid = (next & 0xc0) == 0x80;
+            codepoint = (codepoint << 6) | (next & 0x3f);
+        }
+        valid = valid && codepoint >= minimum && codepoint <= 0x10ffff
+            && !(codepoint >= 0xd800 && codepoint <= 0xdfff);
+        if(valid) {
+            output.append(input.substr(i, length));
+            i += length;
+        }
+        else {
+            output.append("\xef\xbf\xbd");
+            ++i;
+        }
+    }
+    return output;
+}
 
 static std::string tryConvertEncoding(const std::string_view& str, const std::string& src_enc, const std::string& dst_enc, bool ignore_err = true)
 {
@@ -43,7 +205,7 @@ static std::string tryConvertEncoding(const std::string_view& str, const std::st
     catch(...) {
         res = str;
     }
-    return res;
+    return dst_enc == "utf-8" ? sanitizeUtf8(res) : res;
 }
 
 static std::pair<std::string, std::unordered_map<std::string, std::string>> parseMime(const std::string& mime)
@@ -91,6 +253,12 @@ static std::pair<std::string, std::unordered_map<std::string, std::string>> pars
 
 Task<std::optional<std::string>> GeminiCrawler::getNextPotentialCarwlUrl()
 {
+    if(tardis_active_) {
+        std::string queued;
+        if(craw_queue_.try_pop(queued)) co_return queued;
+        co_return {};
+    }
+
     std::string result;
     if(craw_queue_.try_pop(result))
         co_return result;
@@ -160,6 +328,8 @@ Task<bool> GeminiCrawler::shouldCrawl(std::string url_str)
         LOG_ERROR << url_str << " is not a Gemini URL";
         co_return false;
     }
+    if(tardis_active_)
+        co_return true;
     if(inBlacklist(url.str()))
         co_return false;
     // Do not crawl hosts known to be down
@@ -306,16 +476,36 @@ void GeminiCrawler::dispatchCrawl()
         }
         loop_->runInLoop([this](){dispatchCrawl();});
 
-        try {
-            bool success = co_await crawlPage(url_str.value());
-            if(success)
-                LOG_INFO << "Processed " << url_str.value();
-            // else // we already print out the error message in crawlPage()
-            //     LOG_ERROR << "Failed to process " << url_str.value();
-        }
-        catch(std::exception& e) {
-            LOG_ERROR << "Exception escaped crawling "<< url_str.value() <<": " << e.what();
-            abort();
+        size_t retry_count = 0;
+        while(true) {
+            double retry_delay = 0;
+            try {
+                bool success = co_await crawlPage(url_str.value(), retry_count != 0);
+                if(success)
+                    LOG_INFO << "Processed " << url_str.value();
+                if(tardis_active_)
+                    tardis_captures_.erase(url_str.value());
+                break;
+            }
+            catch(std::exception& e) {
+                if(tardis_active_ && isSqlExecutionTimeout(e.what())) {
+                    ++retry_count;
+                    const auto exponent = std::min<size_t>(retry_count - 1, 7);
+                    retry_delay = std::min(30.0, 0.25 * static_cast<double>(size_t{1} << exponent));
+                    LOG_WARN << "PostgreSQL is saturated while importing " << url_str.value()
+                             << "; retry " << retry_count << " in " << retry_delay << " seconds";
+                }
+                else {
+                    LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
+                    if(tardis_active_) {
+                        tardis_captures_.erase(url_str.value());
+                        break;
+                    }
+                    abort();
+                }
+            }
+            if(retry_delay != 0)
+                co_await drogon::sleepCoro(loop_, retry_delay);
         }
         loop_->queueInLoop([this](){dispatchCrawl();});
     }
@@ -325,7 +515,7 @@ void GeminiCrawler::dispatchCrawl()
     }});
 }
 
-Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
+Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after_timeout)
 {
     auto db = app().getDbClient();
     const auto url = tlgs::Url(url_str);
@@ -339,17 +529,18 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
     std::string error;
     try {
-        if(co_await shouldCrawl(url.str()) == false)
+        if(!tardis_active_ && co_await shouldCrawl(url.str()) == false)
             throw std::runtime_error("Blocked by robots.txt");
-        auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash , raw_content_hash, last_status"
-            ", last_crawled_at FROM pages WHERE url = $1;", url.str());
+        auto record = co_await db->execSqlCoro("SELECT url, indexed_content_hash, raw_content_hash, last_status"
+            ", last_crawled_at, search_schema_version FROM pages WHERE url = $1;", url.str());
         bool have_record = record.size() != 0;
         auto indexed_content_hash = have_record ? record[0]["indexed_content_hash"].as<std::string>() : "";
         auto raw_content_hash = have_record ? record[0]["raw_content_hash"].as<std::string>() : "";
+        auto search_schema_version = have_record ? record[0]["search_schema_version"].as<int>() : 0;
 
         if(!have_record) {
             co_await db->execSqlCoro("INSERT INTO pages(url, domain_name, port, first_seen_at)"
-                " VALUES ($1, $2, $3, CURRENT_TIMESTAMP);",
+                " VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT(url) DO NOTHING;",
                 url.str(), url.host(), url.port());
         }
         else {
@@ -377,7 +568,17 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         int redirection_count = 0;
         int status;
         tlgs::Url crawl_url = url;
-        do {
+        if(tardis_active_) {
+            const auto capture = tardis_captures_.find(url.str());
+            if(capture == tardis_captures_.end()) throw std::runtime_error("missing TARDIS capture");
+            resp = HttpResponse::newHttpResponse();
+            resp->setBody(capture->second.body);
+            resp->addHeader("gemini-status", std::to_string(capture->second.status));
+            resp->addHeader("meta", capture->second.meta);
+            resp->setContentTypeString(capture->second.meta);
+            status = capture->second.status;
+        }
+        else do {
             auto redirect = co_await db->execSqlCoro("SELECT to_url FROM perma_redirects WHERE from_url = $1;", crawl_url.str());
             if(redirect.size() != 0) {
                 crawl_url = tlgs::Url(redirect[0]["to_url"].as<std::string>());
@@ -417,7 +618,11 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
         std::optional<std::string> lang;
         std::string title;
         std::string body;
+        std::string headings;
+        std::string link_text;
+        bool has_explicit_title = false;
         std::vector<std::string> links;
+        std::vector<tlgs::GeminiLink> recommendations;
         size_t body_size = resp->body().size();
         std::optional<std::string> feed_type;
         auto new_raw_content_hash = tlgs::xxHash64(resp->body());
@@ -431,7 +636,8 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
 
             // No reason to reindex if the content hasn't changed. `force_reindex_` is used to force reindexing of files
-            if(force_reindex_ == false && raw_content_hash == new_raw_content_hash) {
+            if(!force_reindex_ && !retry_after_timeout && search_schema_version >= 3
+                && raw_content_hash == new_raw_content_hash) {
                 co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                     "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
                     url.str(), status, meta, mime);
@@ -450,6 +656,10 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 tlgs::GeminiDocument doc = tlgs::extractGeminiConcise(nodes);
                 body = std::move(doc.text);
                 links = std::move(doc.links);
+                recommendations = std::move(doc.recommendations);
+                headings = std::move(doc.headings);
+                link_text = std::move(doc.link_text);
+                has_explicit_title = !doc.title.empty();
                 title = std::move(doc.title);
                 if(tlgs::isGemsub(nodes, url, "gemini"))
                     feed_type = "gemsub";
@@ -484,7 +694,8 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             mime = "<gemini-request-info>";
         }
         else {
-            LOG_ERROR << "Failed to fetch " << url.str() << ": " << status;
+            if(!tardis_active_)
+                LOG_ERROR << "Failed to fetch " << url.str() << ": " << status;
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url.str(), status, meta);
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
@@ -492,12 +703,26 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             co_return false;
         }
         // safeguard in case title is too long for Postgres
-        if(title.size() > 1000)
-            title = title.substr(0, 1000) + "...";
+        if(title.size() > 1000) {
+            truncateUtf8(title, 1000);
+            title += "...";
+        }
 
-        auto new_indexed_content_hash = tlgs::xxHash64(body);
+        std::string indexed_content;
+        indexed_content.reserve(body.size() + headings.size() + link_text.size() + title.size() + 3);
+        if(has_explicit_title)
+            indexed_content.append(title);
+        indexed_content.push_back('\n');
+        indexed_content.append(headings);
+        indexed_content.push_back('\n');
+        indexed_content.append(link_text);
+        indexed_content.push_back('\n');
+        indexed_content.append(body);
+        auto new_indexed_content_hash = tlgs::xxHash64(indexed_content);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
-        if(new_indexed_content_hash == indexed_content_hash && new_raw_content_hash == raw_content_hash) {
+        if(!force_reindex_ && !retry_after_timeout && search_schema_version >= 3
+            && new_indexed_content_hash == indexed_content_hash
+            && new_raw_content_hash == raw_content_hash) {
             // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                 "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
@@ -505,31 +730,30 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             co_return true;
         }
 
-        std::set<tlgs::Url> link_urls;
-        for(const auto& link : links) {
+        auto normalizeLink = [&url](const std::string& link) -> std::optional<tlgs::Url> {
             // ignore links like mailto: ldap:. etc..
             if(tlgs::isNonUriAction(link))
-                continue;
+                return std::nullopt;
 
             auto link_url = tlgs::Url(link);
             if(link_url.good()) {
                 if(link_url.protocol() == "")
                     link_url.withProtocol(url.protocol());
                 if(link_url.protocol() != "gemini")
-                    continue;
+                    return std::nullopt;
             }
             // sometimes invalid host/port causes the URL to be invalid. Ignore them
             else if(link.starts_with("gemini://")) {
-                continue;
+                return std::nullopt;
             }
             // Drop links that are too long and obviously invalid
             else if(link.size() > 1024) {
-                continue;
+                return std::nullopt;
             }
             else  {
                 link_url = linkCompose(url, link);
                 if(link_url.good() == false)
-                    continue;
+                    return std::nullopt;
             }
             // We shall not send fragments
             link_url.withFragment("");
@@ -537,7 +761,35 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
             // HACK: avoid mistyped links like gemini://en.gmn.clttr.info/cgmnlm.gmi?gemini://en.gmn.clttr.info/cgmnlm.gmi
             if(link_url.str().starts_with(link_url.param()) && link_url.path().ends_with(".gmi"))
                 link_url.withParam("");
-            link_urls.insert(std::move(link_url));
+            return link_url;
+        };
+
+        std::set<tlgs::Url> link_urls;
+        std::unordered_map<std::string, std::string> qualifying_text;
+        for(const auto& recommendation : recommendations) {
+            auto link_url = normalizeLink(recommendation.target);
+            if(!link_url)
+                continue;
+            const auto normalized = link_url->str();
+            auto& qualifier = qualifying_text[normalized];
+            if(qualifier.empty())
+                qualifier = recommendation.qualifying_text;
+            else if(qualifier.find(recommendation.qualifying_text) == std::string::npos) {
+                constexpr size_t max_qualifying_text_size = 4096;
+                if(qualifier.size() < max_qualifying_text_size) {
+                    qualifier.push_back('\n');
+                    qualifier.append(recommendation.qualifying_text, 0,
+                        max_qualifying_text_size - qualifier.size());
+                }
+            }
+            link_urls.insert(std::move(*link_url));
+        }
+        // Keep this fallback for callers that construct GeminiDocument links without
+        // recommendation context and for old parser behavior.
+        for(const auto& link : links) {
+            auto link_url = normalizeLink(link);
+            if(link_url)
+                link_urls.insert(std::move(*link_url));
         }
 
         // TODO: Use C++20 ranges. My basic implementation is not as efficent as it could be.
@@ -554,15 +806,31 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 return link_url.str();
             });
 
-        // TODO: Guess the language of the content. Then index them with different parsers
         auto index_friendly_url = indexFriendly(url);
+        truncateUtf8(index_friendly_url, 2000);
+        auto indexed_title = sampleUtf8(has_explicit_title ? title : "", 1024);
+        auto indexed_headings = sampleUtf8(headings, 8 * 1024);
+        auto indexed_link_text = sampleUtf8(link_text, 8 * 1024);
+        auto indexed_body = sampleUtf8(body, 32 * 1024);
+        auto reduced_headings = sampleUtf8(headings, 4 * 1024);
+        auto reduced_link_text = sampleUtf8(link_text, 4 * 1024);
+        auto reduced_body = sampleUtf8(body, 16 * 1024);
+        auto minimal_headings = sampleUtf8(headings, 1024);
+        auto minimal_link_text = sampleUtf8(link_text, 1024);
+        auto minimal_body = sampleUtf8(body, 4 * 1024);
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
             "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14, "
-            "search_vector = to_tsvector(REPLACE($9, '.', ' ') || ' ' || $15 || ' ' || $2), "
-            "title_vector = to_tsvector(REPLACE($9, '.', ' ') || ' ' || $15), last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;",
+            "has_explicit_title = $16, search_headings = $17, search_link_text = $18, "
+            "search_vector = tlgs_bounded_search_vector('simple', $19, $20, $15, $21, $22, $23, $24, $25, $26, $27, $28), "
+            "english_search_vector = CASE WHEN $5::text IS NULL OR lower(split_part($5::text, ',', 1)) ~ '^en([_-]|$)' THEN "
+                "tlgs_bounded_search_vector('english', $19, $20, $15, $21, $22, $23, $24, $25, $26, $27, $28) ELSE NULL END, "
+            "title_vector = to_tsvector('simple', $19), "
+            "search_schema_version = 3, last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
-            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type, index_friendly_url);
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type, index_friendly_url,
+            has_explicit_title, headings, link_text, indexed_title, indexed_headings, indexed_link_text, indexed_body,
+            reduced_headings, reduced_link_text, reduced_body, minimal_headings, minimal_link_text, minimal_body);
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
             co_return true;
 
@@ -575,7 +843,8 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
                 {"to_url", link_url.str()},
                 {"is_cross_site", is_cross_site},
                 {"to_host", link_url.host()},
-                {"to_port", link_url.port()}
+                {"to_port", link_url.port()},
+                {"qualifying_text", qualifying_text[link_url.str()]}
             });
 
             if(co_await shouldCrawl(link_url.str()) == false)
@@ -589,9 +858,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
 
         auto transaction = co_await db->newTransactionCoro();
         co_await transaction->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
-        co_await transaction->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port) "
-            "SELECT $1, $2, $3, link.to_url, link.is_cross_site, link.to_host, link.to_port "
-            "FROM jsonb_to_recordset($4::jsonb) AS link(to_url text, is_cross_site boolean, to_host text, to_port integer) "
+        co_await transaction->execSqlCoro("INSERT INTO links (url, host, port, to_url, is_cross_site, to_host, to_port, qualifying_text, qualifying_vector) "
+            "SELECT $1, $2, $3, link.to_url, link.is_cross_site, link.to_host, link.to_port, link.qualifying_text, to_tsvector('simple', link.qualifying_text) "
+            "FROM jsonb_to_recordset($4::jsonb) AS link(to_url text, is_cross_site boolean, to_host text, to_port integer, qualifying_text text) "
             "ON CONFLICT DO NOTHING;", url.str(), url.host(), url.port(), link_rows.dump());
         if(!page_rows.empty()) {
             co_await transaction->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
@@ -603,6 +872,12 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str)
     catch(std::exception& e) {
         error = e.what();
     }
+
+    // Snapshot responses stay resident until the page is committed. Let the dispatcher
+    // retry the same response after database pressure subsides instead of running more SQL
+    // in this already-timed-out attempt.
+    if(tardis_active_ && isSqlExecutionTimeout(error))
+        throw std::runtime_error(error);
 
     if(error == "Timeout" || error == "NetworkFailure")
         host_timeout_count_[url.hostWithPort(1965)]++;

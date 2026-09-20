@@ -10,23 +10,52 @@
 #include <atomic>
 #include <regex>
 #include <span>
-#include <ranges>
 #include <random>
 #include <filesystem>
-#include <fmt/core.h>
+#include <fmt/format.h>
 
 #include "search_result.hpp"
 
 using namespace drogon;
 
+namespace
+{
+constexpr size_t search_results_per_page = 10;
+constexpr size_t fusion_candidate_limit = 1000;
+constexpr size_t fusion_raw_candidate_limit = 5000;
+constexpr size_t fusion_graph_candidate_limit = 250;
+constexpr double fusion_rrf_constant = 60.0;
+
+struct TimedSqlResult
+{
+    std::shared_ptr<orm::Result> rows;
+    std::chrono::milliseconds duration{};
+};
+
+template<typename QueryFactory>
+Task<TimedSqlResult> executeTimed(QueryFactory query_factory)
+{
+    const auto started = std::chrono::steady_clock::now();
+    auto rows = co_await query_factory();
+    co_return TimedSqlResult {
+        .rows = std::make_shared<orm::Result>(std::move(rows)),
+        .duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started)
+    };
+}
+}
+
 struct RankedResult
 {
     std::string url;
+    std::string logical_site;
     std::string content_type;
     size_t size;
     uint64_t content_hash;
-    float score;
+    double score;
 };
+
+struct SearchFilter;
 
 struct SearchController : public HttpController<SearchController>
 {
@@ -34,7 +63,8 @@ public:
     enum class RankingAlgorithm
     {
         HITS,
-        SALSA
+        SALSA,
+        FUSION
     };
 
     SearchController();
@@ -54,9 +84,15 @@ public:
     METHOD_LIST_END
 
 
-    Task<std::vector<RankedResult>> pageSearch(const std::string& query_str);
+    Task<std::vector<RankedResult>> pageSearch(
+        const std::string& query_str, const SearchFilter& filter);
+    Task<std::vector<RankedResult>> fusionSearch(
+        const std::string& query_str, const SearchFilter& filter);
     std::atomic<size_t> search_in_flight{0};
-    RankingAlgorithm ranking_algorithm = RankingAlgorithm::SALSA;
+    RankingAlgorithm ranking_algorithm = RankingAlgorithm::FUSION;
+    double fusion_graph_weight = 1.0;
+    double fusion_site_decay = 0.5;
+    size_t fusion_max_site_results_per_page = 2;
 };
 
 auto sanitizeGemini(std::string preview) -> std::string {
@@ -97,7 +133,7 @@ struct SearchFilter
 
     bool empty() const
     {
-        return content_type.empty() && domain.empty() && size.empty();
+        return content_type.empty() && domain.empty() && size.empty() && title.empty();
     }
 };
 
@@ -237,10 +273,38 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
     if(!search_query.empty())
         search_query.resize(search_query.size()-1);
     
-    // add title filters to search query
-    for(const auto& tc : filter.title)
-        search_query += tc.value + " ";
+    // A positive intitle term also supplies the lexical query for searches such
+    // as "intitle:gemini". Negated title filters must not require the excluded
+    // term to occur in the document.
+    for(const auto& tc : filter.title) {
+        if(!tc.negate) {
+            if(!search_query.empty())
+                search_query += ' ';
+            search_query += tc.value;
+        }
+    }
+    if(!search_query.empty() && search_query.back() == ' ')
+        search_query.pop_back();
     return {search_query, filter};
+}
+
+nlohmann::json serializeSearchFilter(const SearchFilter& filter)
+{
+    nlohmann::json result = {
+        {"content_type", nlohmann::json::array()},
+        {"domain", nlohmann::json::array()},
+        {"size", nlohmann::json::array()},
+        {"title", nlohmann::json::array()}
+    };
+    for(const auto& item : filter.content_type)
+        result["content_type"].push_back({{"value", item.value}, {"negate", item.negate}});
+    for(const auto& item : filter.domain)
+        result["domain"].push_back({{"value", item.value}, {"negate", item.negate}});
+    for(const auto& item : filter.size)
+        result["size"].push_back({{"size", item.size}, {"greater", item.greater}});
+    for(const auto& item : filter.title)
+        result["title"].push_back({{"value", item.value}, {"negate", item.negate}});
+    return result;
 }
 
 /**
@@ -411,6 +475,128 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
     return score;
 }
 
+std::vector<RankedResult> deduplicateRankedResults(
+    std::vector<RankedResult>& nodes,
+    const std::span<const unsigned char> roots,
+    const std::string_view query)
+{
+    const auto started = std::chrono::high_resolution_clock::now();
+    std::unordered_multimap<uint64_t, const RankedResult*> result_map;
+    result_map.reserve(nodes.size());
+    std::string buf(8, '\0');
+    drogon::utils::secureRandomBytes(buf.data(), buf.size());
+    const std::string token = "/" + drogon::utils::binaryStringToHex(
+        reinterpret_cast<unsigned char*>(buf.data()), buf.size());
+    size_t num_root = 0;
+    for(size_t i = 0; i < nodes.size(); ++i) {
+        auto& node = nodes[i];
+        if(!roots.empty() && !roots[i])
+            continue;
+        ++num_root;
+        auto [begin, end] = result_map.equal_range(node.content_hash);
+        if(node.size == 0 || begin == end) {
+            result_map.emplace(node.content_hash, &node);
+            continue;
+        }
+
+        auto to_lower = [](const std::string& str) {
+            std::string ret = str;
+            std::transform(ret.begin(), ret.end(), ret.begin(), ::tolower);
+            return ret;
+        };
+        tlgs::Url node_url(node.url);
+        node_url.withHost(to_lower(node_url.host()));
+        std::string normalized = node.url;
+        drogon::utils::replaceAll(normalized, "/~", token);
+        drogon::utils::replaceAll(normalized, "/users", token);
+        drogon::utils::replaceAll(normalized, "/user", token);
+        if(normalized.ends_with("/"))
+            normalized.pop_back();
+        bool replaced = false;
+        for(auto& [_, stored] : std::ranges::subrange(begin, end)) {
+            tlgs::Url stored_url(stored->url);
+            stored_url.withHost(to_lower(stored_url.host()));
+            std::string stored_normalized = stored->url;
+            drogon::utils::replaceAll(stored_normalized, "/~", token);
+            drogon::utils::replaceAll(stored_normalized, "/users", token);
+            drogon::utils::replaceAll(stored_normalized, "/user", token);
+
+            if(node_url.host() == stored_url.host() ||
+               node_url.path() == stored_url.path() ||
+               stored->url.ends_with(node_url.host() + node_url.path()) ||
+               normalized == stored_normalized) {
+                if(stored->score < node.score)
+                    stored = &node;
+                replaced = true;
+                break;
+            }
+
+            if(node.url.ends_with(stored_url.host() + stored_url.path())) {
+                replaced = true;
+                break;
+            }
+        }
+        if(!replaced)
+            result_map.emplace(node.content_hash, &node);
+    }
+
+    std::vector<RankedResult> results;
+    results.reserve(result_map.size());
+    for(const auto& [_, item] : result_map)
+        results.emplace_back(*item);
+    std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) {
+        if(lhs.score != rhs.score)
+            return lhs.score > rhs.score;
+        return lhs.url < rhs.url;
+    });
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - started);
+    LOG_DEBUG << "Deduplication removed " << num_root - result_map.size()
+              << " results for search term `" << query << "` in "
+              << elapsed.count() << "ms";
+    return results;
+}
+
+std::vector<RankedResult> crowdResultPages(
+    std::vector<RankedResult> pending,
+    const size_t page_size,
+    const size_t max_per_site)
+{
+    if(max_per_site == 0 || max_per_site >= page_size)
+        return pending;
+
+    std::vector<RankedResult> diversified;
+    diversified.reserve(pending.size());
+    while(!pending.empty()) {
+        std::unordered_map<std::string, size_t> site_counts;
+        std::vector<RankedResult> deferred;
+        deferred.reserve(pending.size());
+        size_t selected = 0;
+        for(auto& result : pending) {
+            const auto& site = result.logical_site.empty() ? result.url : result.logical_site;
+            if(selected < page_size && site_counts[site] < max_per_site) {
+                ++site_counts[site];
+                ++selected;
+                diversified.emplace_back(std::move(result));
+            }
+            else {
+                deferred.emplace_back(std::move(result));
+            }
+        }
+
+        // A narrow query may not have enough independent sites to fill a page.
+        // Relax the cap only for the otherwise-empty slots; never drop results.
+        const auto missing = std::min(page_size - selected, deferred.size());
+        for(size_t i = 0; i < missing; ++i)
+            diversified.emplace_back(std::move(deferred[i]));
+        if(missing != 0)
+            deferred.erase(deferred.begin(), deferred.begin() + missing);
+        pending = std::move(deferred);
+    }
+    return diversified;
+}
+
 SearchController::SearchController()
 {
     auto tlgs = app().getCustomConfig()["tlgs"];
@@ -419,28 +605,465 @@ SearchController::SearchController()
 
     auto ranking_algo = tlgs["ranking_algo"];
     if(!ranking_algo.isNull()) {
-        auto algo = ranking_algo.asString();
-        if(algo == "hits")
-            ranking_algorithm = RankingAlgorithm::HITS;
-        else if(algo == "salsa")
-            ranking_algorithm = RankingAlgorithm::SALSA;
-        else {
-            LOG_WARN << "Unknown ranking algorithm: " << algo << ", defaulting to SALSA instead";
-            ranking_algorithm = RankingAlgorithm::SALSA;
+        if(!ranking_algo.isString()) {
+            LOG_WARN << "ranking_algo must be a string; defaulting to fusion";
         }
+        else {
+            const auto algo = ranking_algo.asString();
+            if(algo == "hits")
+                ranking_algorithm = RankingAlgorithm::HITS;
+            else if(algo == "salsa")
+                ranking_algorithm = RankingAlgorithm::SALSA;
+            else if(algo == "fusion")
+                ranking_algorithm = RankingAlgorithm::FUSION;
+            else
+                LOG_WARN << "Unknown ranking algorithm: " << algo
+                         << ", defaulting to fusion instead";
+        }
+    }
+
+    auto graph_weight = tlgs["fusion_graph_weight"];
+    if(!graph_weight.isNull()) {
+        bool valid = false;
+        if(graph_weight.isNumeric()) {
+            const auto configured_weight = graph_weight.asDouble();
+            if(configured_weight >= 0.0 && configured_weight <= 4.0) {
+                fusion_graph_weight = configured_weight;
+                valid = true;
+            }
+        }
+        if(!valid)
+            LOG_WARN << "fusion_graph_weight must be between 0 and 4; using 1.0";
+    }
+
+    auto site_decay = tlgs["fusion_site_decay"];
+    if(!site_decay.isNull()) {
+        bool valid = false;
+        if(site_decay.isNumeric()) {
+            const auto configured_decay = site_decay.asDouble();
+            if(configured_decay >= 0.0 && configured_decay <= 4.0) {
+                fusion_site_decay = configured_decay;
+                valid = true;
+            }
+        }
+        if(!valid)
+            LOG_WARN << "fusion_site_decay must be between 0 and 4; using 0.5";
+    }
+
+    auto site_cap = tlgs["fusion_max_site_results_per_page"];
+    if(!site_cap.isNull()) {
+        bool valid = false;
+        if(site_cap.isUInt()) {
+            const auto configured_cap = site_cap.asUInt();
+            if(configured_cap <= search_results_per_page) {
+                fusion_max_site_results_per_page = configured_cap;
+                valid = true;
+            }
+        }
+        if(!valid)
+            LOG_WARN << "fusion_max_site_results_per_page must be between 0 and 10; using 2";
+    }
+
+    if(ranking_algorithm == RankingAlgorithm::FUSION) {
+        LOG_INFO << "Search ranking: fusion (graph weight " << fusion_graph_weight
+                 << ", site decay " << fusion_site_decay
+                 << ", per-page site cap " << fusion_max_site_results_per_page << ')';
+    }
+    else if(ranking_algorithm == RankingAlgorithm::SALSA) {
+        LOG_WARN << "Search ranking: legacy query-time SALSA";
+    }
+    else {
+        LOG_WARN << "Search ranking: legacy query-time HITS";
     }
 }
 
-Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& query_str)
+Task<std::vector<RankedResult>> SearchController::fusionSearch(
+    const std::string& query_str, const SearchFilter& filter)
 {
+    using Clock = std::chrono::steady_clock;
+    const auto search_started = Clock::now();
+    auto db = app().getDbClient();
+    const auto filter_json = serializeSearchFilter(filter).dump();
+    auto fts_task = executeTimed(
+        [db, query_str, filter_json, site_decay=fusion_site_decay]() {
+        return db->execSqlCoro(R"sql(
+        WITH query AS (
+            SELECT websearch_to_tsquery('simple', $1) AS simple,
+                   websearch_to_tsquery('english', $1) AS english,
+                   phraseto_tsquery('simple', $1) AS simple_phrase,
+                   phraseto_tsquery('english', $1) AS english_phrase
+        ), filters AS (
+            SELECT $5::jsonb AS value
+        ), active AS (
+            SELECT (
+                SELECT active_ruleset_id
+                FROM site_identity_state
+                WHERE singleton=TRUE
+            ) AS ruleset_id
+        ), lexical_scored AS (
+            SELECT pages.url, pages.content_type, pages.size,
+                   pages.indexed_content_hash AS content_hash,
+                   concat('gemini://', lower(pages.domain_name),
+                          CASE WHEN pages.port = 1965 THEN ''
+                               ELSE ':' || pages.port::text END) AS physical_site,
+                   (CASE WHEN pages.search_vector @@ query.simple THEN
+                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                        pages.search_vector, query.simple, 1), 0.5)
+                    ELSE 0.8 * (
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                        pages.english_search_vector, query.english, 1), 0.5)
+                    ) END)::double precision AS fts_score
+            FROM pages
+            CROSS JOIN query
+            CROSS JOIN filters
+            WHERE (pages.search_vector @@ query.simple
+               OR (query.english <> query.simple
+                   AND pages.english_search_vector @@ query.english))
+              AND (jsonb_array_length(filters.value->'content_type')=0 OR (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE (item->>'negate')::boolean
+                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+                )
+                AND (
+                    NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                        WHERE NOT (item->>'negate')::boolean
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                        WHERE NOT (item->>'negate')::boolean
+                          AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+                    )
+                )
+              ))
+              AND (jsonb_array_length(filters.value->'domain')=0 OR (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE (item->>'negate')::boolean
+                      AND lower(pages.domain_name)=lower(item->>'value')
+                )
+                AND (
+                    NOT EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                        WHERE NOT (item->>'negate')::boolean
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                        WHERE NOT (item->>'negate')::boolean
+                          AND lower(pages.domain_name)=lower(item->>'value')
+                    )
+                )
+              ))
+              AND (
+                jsonb_array_length(filters.value->'size')=0
+                OR (pages.size > 0 AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
+                    WHERE CASE WHEN (item->>'greater')::boolean
+                               THEN pages.size <= (item->>'size')::bigint
+                               ELSE pages.size >= (item->>'size')::bigint END
+                ))
+              )
+              AND (jsonb_array_length(filters.value->'title')=0 OR (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                    WHERE (item->>'negate')::boolean
+                      AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
+                )
+              ))
+        ), lexical_pool AS MATERIALIZED (
+            SELECT * FROM lexical_scored
+            ORDER BY fts_score DESC
+            LIMIT $2
+        ), lexical_mapped AS MATERIALIZED (
+            SELECT lexical_pool.*,
+                   coalesce(target_map.site_key, lexical_pool.physical_site) AS target_site
+            FROM lexical_pool
+            CROSS JOIN active
+            LEFT JOIN url_site_map target_map
+              ON target_map.ruleset_id=active.ruleset_id
+             AND target_map.url=lexical_pool.url
+        ), lexical_site_ranked AS MATERIALIZED (
+            SELECT lexical_mapped.*,
+                   row_number() OVER (
+                       PARTITION BY target_site
+                       ORDER BY fts_score DESC, url
+                   ) AS lexical_site_rank
+            FROM lexical_mapped
+        ), lexical AS MATERIALIZED (
+            SELECT lexical_site_ranked.*,
+                   (fts_score /
+                    (1.0 + $4::double precision * (lexical_site_rank - 1)))::double precision
+                       AS lexical_score
+            FROM lexical_site_ranked
+            ORDER BY lexical_score DESC, url
+            LIMIT $3
+        ), candidates AS MATERIALIZED (
+            SELECT lexical.*,
+                   row_number() OVER (ORDER BY lexical_score DESC, url) AS fts_rank
+            FROM lexical
+        )
+        SELECT candidates.url, candidates.content_type, candidates.size,
+               candidates.content_hash, candidates.target_site,
+               candidates.fts_rank
+        FROM candidates
+        ORDER BY candidates.fts_rank
+    )sql", query_str, fusion_raw_candidate_limit, fusion_candidate_limit,
+        site_decay, filter_json);
+    });
+
+    auto hilltop_task = executeTimed(
+        [db, query_str, filter_json, filter_empty=filter.empty()]() {
+        return db->execSqlCoro(R"sql(
+        WITH query AS (
+            SELECT websearch_to_tsquery('simple', $1) AS value
+        ), filters AS (
+            SELECT $3::jsonb AS value
+        ), site_votes AS MATERIALIZED (
+            SELECT edges.target_url,
+                   edges.target_site,
+                   edges.expert_site,
+                   max(1.0 + least(
+                       4.0 * ts_rank_cd(edges.qualifying_vector, query.value, 1),
+                       1.0
+                   )) AS vote
+            FROM hilltop_edges edges
+            CROSS JOIN query
+            WHERE edges.ruleset_id=(
+                SELECT active_ruleset_id
+                FROM site_identity_state
+                WHERE singleton=TRUE
+            )
+              AND edges.qualifying_vector @@ query.value
+            GROUP BY edges.target_url, edges.target_site, edges.expert_site
+        ), authority AS (
+            SELECT target_url,
+                   target_site,
+                   sum(vote) AS authority_score,
+                   count(*) AS independent_sites
+            FROM site_votes
+            GROUP BY target_url, target_site
+            HAVING count(*) >= 2
+        ), ranked AS (
+            SELECT authority.*,
+                   dense_rank() OVER (
+                       ORDER BY authority_score DESC, independent_sites DESC
+                   ) AS graph_rank
+            FROM authority
+        ), ranked_limited AS MATERIALIZED (
+            SELECT *
+            FROM ranked
+            ORDER BY graph_rank, target_url
+            LIMIT CASE WHEN $4::boolean THEN $2::bigint * 4 ELSE 2147483647::bigint END
+        )
+        SELECT ranked_limited.target_url,
+               ranked_limited.target_site,
+               ranked_limited.graph_rank,
+               ranked_limited.authority_score,
+               ranked_limited.independent_sites,
+               pages.content_type,
+               pages.size,
+               pages.indexed_content_hash AS content_hash
+        FROM ranked_limited
+        JOIN pages ON pages.url=ranked_limited.target_url
+        CROSS JOIN filters
+        WHERE pages.last_indexed_at IS NOT NULL
+          AND (jsonb_array_length(filters.value->'content_type')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                WHERE (item->>'negate')::boolean
+                  AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+                )
+            )
+          ))
+          AND (jsonb_array_length(filters.value->'domain')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                WHERE (item->>'negate')::boolean
+                  AND lower(pages.domain_name)=lower(item->>'value')
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND lower(pages.domain_name)=lower(item->>'value')
+                )
+            )
+          ))
+          AND (
+            jsonb_array_length(filters.value->'size')=0
+            OR (pages.size > 0 AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
+                WHERE CASE WHEN (item->>'greater')::boolean
+                           THEN pages.size <= (item->>'size')::bigint
+                           ELSE pages.size >= (item->>'size')::bigint END
+            ))
+          )
+          AND (jsonb_array_length(filters.value->'title')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE (item->>'negate')::boolean
+                  AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE NOT (item->>'negate')::boolean
+                  AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
+            )
+          ))
+        ORDER BY ranked_limited.graph_rank, ranked_limited.target_url
+        LIMIT $2
+    )sql", query_str, fusion_graph_candidate_limit, filter_json, filter_empty);
+    });
+
+    auto [fts_query, hilltop_query] = co_await when_all(
+        std::move(fts_task), std::move(hilltop_task));
+    const auto queries_finished = Clock::now();
+    const auto& rows = *fts_query.rows;
+    const auto& authority_rows = *hilltop_query.rows;
+
+    struct FusionCandidate
+    {
+        RankedResult result;
+        size_t fts_rank = 0;
+        size_t graph_rank = 0;
+        double fused_score = 0;
+    };
+
+    std::vector<FusionCandidate> candidates;
+    candidates.reserve(rows.size() + authority_rows.size());
+    std::unordered_map<std::string, size_t> candidate_indexes;
+    candidate_indexes.reserve(rows.size() + authority_rows.size());
+    for(const auto& row : rows) {
+        FusionCandidate candidate;
+        auto& result = candidate.result;
+        result.url = row["url"].as<std::string>();
+        result.logical_site = row["target_site"].as<std::string>();
+        if(!row["content_type"].isNull())
+            result.content_type = row["content_type"].as<std::string>();
+        result.size = row["size"].as<int64_t>();
+        std::string content_hash = row["content_hash"].as<std::string>();
+        if(content_hash.empty())
+            content_hash = "0";
+        result.content_hash = std::stoull(content_hash, nullptr, 16);
+        candidate.fts_rank = row["fts_rank"].as<int64_t>();
+        candidate_indexes.emplace(result.url, candidates.size());
+        candidates.emplace_back(std::move(candidate));
+    }
+
+    size_t graph_only_candidates = 0;
+    for(const auto& row : authority_rows) {
+        const auto url = row["target_url"].as<std::string>();
+        const auto graph_rank = row["graph_rank"].as<int64_t>();
+        if(const auto existing = candidate_indexes.find(url);
+           existing != candidate_indexes.end()) {
+            candidates[existing->second].graph_rank = graph_rank;
+            continue;
+        }
+
+        FusionCandidate candidate;
+        candidate.result.url = url;
+        candidate.result.logical_site = row["target_site"].as<std::string>();
+        if(!row["content_type"].isNull())
+            candidate.result.content_type = row["content_type"].as<std::string>();
+        candidate.result.size = row["size"].as<int64_t>();
+        std::string content_hash = row["content_hash"].as<std::string>();
+        if(content_hash.empty())
+            content_hash = "0";
+        candidate.result.content_hash = std::stoull(content_hash, nullptr, 16);
+        candidate.graph_rank = graph_rank;
+        candidate_indexes.emplace(candidate.result.url, candidates.size());
+        candidates.emplace_back(std::move(candidate));
+        ++graph_only_candidates;
+    }
+
+    for(auto& candidate : candidates) {
+        if(candidate.fts_rank != 0)
+            candidate.fused_score += 1.0 /
+                (fusion_rrf_constant + candidate.fts_rank);
+        if(candidate.graph_rank != 0)
+            candidate.fused_score += fusion_graph_weight /
+                (fusion_rrf_constant + candidate.graph_rank);
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        if(lhs.fused_score != rhs.fused_score)
+            return lhs.fused_score > rhs.fused_score;
+        return lhs.fts_rank < rhs.fts_rank;
+    });
+
+    std::unordered_map<std::string, size_t> site_ranks;
+    std::vector<RankedResult> results;
+    results.reserve(candidates.size());
+    for(auto& candidate : candidates) {
+        const auto site_rank = ++site_ranks[candidate.result.logical_site];
+        candidate.result.score = candidate.fused_score /
+            (1.0 + fusion_site_decay * (site_rank - 1));
+        results.emplace_back(std::move(candidate.result));
+    }
+    std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) {
+        if(lhs.score != rhs.score)
+            return lhs.score > rhs.score;
+        return lhs.url < rhs.url;
+    });
+
+    const auto fusion_finished = Clock::now();
+    const auto milliseconds = [](const auto begin, const auto end) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
+    };
+    LOG_DEBUG << "Fusion search timings for `" << query_str << "`: FTS "
+              << fts_query.duration.count() << "ms (" << rows.size()
+              << " candidates), Hilltop " << hilltop_query.duration.count()
+              << "ms (" << authority_rows.size() << " authority targets, "
+              << graph_only_candidates << " graph-only), parallel queries "
+              << milliseconds(search_started, queries_finished) << "ms, fusion "
+              << milliseconds(queries_finished, fusion_finished) << "ms";
+
+    auto deduplicated = deduplicateRankedResults(
+        results, std::span<const unsigned char>{}, query_str);
+    co_return crowdResultPages(
+        std::move(deduplicated), search_results_per_page, fusion_max_site_results_per_page);
+}
+
+Task<std::vector<RankedResult>> SearchController::pageSearch(
+    const std::string& query_str, const SearchFilter& filter)
+{
+    if(ranking_algorithm == RankingAlgorithm::FUSION)
+        co_return co_await fusionSearch(query_str, filter);
     auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
     constexpr size_t max_root_set_size = 1000;
     constexpr size_t max_rank_candidates = 10000;
     auto nodes_of_intrest = co_await db->execSqlCoro("WITH candidates AS MATERIALIZED ("
-        "SELECT url FROM pages WHERE search_vector @@ plainto_tsquery($1) LIMIT $2"
+        "SELECT url FROM pages WHERE search_vector @@ websearch_to_tsquery('simple', $1) LIMIT $2"
         "), roots AS MATERIALIZED ("
-        "SELECT pages.url, ts_rank_cd(title_vector, plainto_tsquery($1))*50 + ts_rank_cd(search_vector, plainto_tsquery($1)) AS rank "
+        "SELECT pages.url, ts_rank_cd(title_vector, websearch_to_tsquery('simple', $1))*50 + "
+        "ts_rank_cd(search_vector, websearch_to_tsquery('simple', $1)) AS rank "
         "FROM pages JOIN candidates ON pages.url = candidates.url ORDER BY rank DESC LIMIT $3"
         ") SELECT roots.url AS source_url, pages.cross_site_links, pages.content_type, pages.size, "
         "pages.indexed_content_hash AS content_hash, roots.rank FROM roots JOIN pages ON pages.url = roots.url "
@@ -561,127 +1184,9 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(const std::string& 
         node.score = 2*(boost * rank) / (boost + rank);
     }
 
-    // Deduplicate the search results using URL and hash. Currently it merges the results if the hash is the same
-    // and one of the following is true:
-    // 1. The two pages lives on the same host
-    // 2. The two pages have the same path
-    // 3. We can replace /~ with /users or /user and resulting URL is the same
-    // 4. Tailing / can be removed from the URL yet have the same result
-    //
-    // It works by storing using the hash as the key and looks up other nodes with the same hash. Then decide if 
-    // we should merge or not.
-    auto deduplication_start = std::chrono::high_resolution_clock::now();
-    std::unordered_multimap<uint64_t,const RankedResult*> result_map;
-    result_map.reserve(nodes.size());
-    std::string buf(8, '\0');
-    drogon::utils::secureRandomBytes(buf.data(), buf.size());
-    std::string token = "/"+drogon::utils::binaryStringToHex((unsigned char*)buf.data(), buf.size());
-    size_t num_root = 0;
-    for(size_t i=0;i<nodes.size();i++) {
-        auto& node = nodes[i];
-        if(is_root[i] == false)
-            continue;
-        num_root++;
-        auto [begin, end] = result_map.equal_range(node.content_hash);
-        if(node.size == 0 || begin == end) {
-            result_map.emplace(node.content_hash, &node);
-            continue;
-        }
-
-        auto to_lower = [](const std::string& str) {
-            std::string ret = str;
-            std::transform(ret.begin(), ret.end(), ret.begin(), ::tolower);
-            return ret;
-        };
-        tlgs::Url node_url(node.url);
-        node_url.withHost(to_lower(node_url.host()));
-        std::string str = node.url;
-        drogon::utils::replaceAll(str, "/~", token);
-        drogon::utils::replaceAll(str, "/users", token);
-        drogon::utils::replaceAll(str, "/user", token);
-        if(str.ends_with("/"))
-            str.pop_back();
-        bool replaced = false;
-        for(auto& [_, stored] : std::ranges::subrange(begin, end)) {
-            tlgs::Url stored_url(stored->url);
-            stored_url.withHost(to_lower(stored_url.host()));
-            std::string str2 = stored->url;
-            drogon::utils::replaceAll(str2, "/~", token);
-            drogon::utils::replaceAll(str2, "/users", token);
-            drogon::utils::replaceAll(str2, "/user", token);
-
-            if(node_url.host() == stored_url.host() ||
-                node_url.path() == stored_url.path() ||
-                stored->url.ends_with(node_url.host()+node_url.path()) ||
-                str == str2) {
-                if(stored->score < node.score)
-                    stored = &node;
-                replaced = true;
-                break;
-            }
-
-            // Anti-spam/takeover protection. There are some archives on Geminispace. Commonly with the
-            // URL gemini://example.com/<hostname>/<path....>/<filename> This prevents replacing the real
-            // capsure link with the mirror/archive
-            if(node.url.ends_with(stored_url.host()+stored_url.path())) {
-                replaced = true;
-                break;
-            }
-        }
-        
-        if(replaced == false)
-            result_map.emplace(node.content_hash, &node);
-    }
-    auto deduplication_end = std::chrono::high_resolution_clock::now();
     auto sql_time = std::chrono::duration_cast<std::chrono::milliseconds>(sql_end - sql_start);
-    auto dedup_time = std::chrono::duration_cast<std::chrono::milliseconds>(deduplication_end - deduplication_start);
-    LOG_DEBUG << "Deduplication removed " << num_root - result_map.size() << " results for search term `" << query_str <<"`";
-    LOG_DEBUG << "SQL query time: " << sql_time.count() << "ms, Deduplication time: " << dedup_time.count() << "ms";;
-
-    std::vector<RankedResult> search_result;
-    search_result.reserve(result_map.size());
-    for(auto& [_, item] : result_map)
-        search_result.emplace_back(std::move(*item));
-
-    std::sort(search_result.begin(), search_result.end(), [](const auto& a, const auto& b) {
-        return a.score > b.score;
-    });
-    co_return search_result;
-}
-
-bool evalFilter(const std::string_view host, const std::string_view content_type, size_t size, const SearchFilter& filter)
-{
-    if(size == 0 && filter.size.size() != 0)
-        return false;
-    
-    auto size_it = std::find_if(filter.size.begin(), filter.size.end(), [size](const auto& size_constrant){
-        if(size_constrant.greater)
-            return size > size_constrant.size;
-        else
-            return size < size_constrant.size;
-    });
-    if(!filter.size.empty() && size_it == filter.size.end())
-        return false;
-    
-    auto domain_it = std::find_if(filter.domain.begin(), filter.domain.end(), [host](const auto& domain_constrant){
-        return domain_constrant.negate ^ (host == domain_constrant.value);
-    });
-    if(!filter.domain.empty() && domain_it == filter.domain.end())
-        return false;
-    
-    auto content_it = std::find_if(filter.content_type.begin(), filter.content_type.end(), [content_type](const auto& content_constrant){
-        return content_constrant.negate ^ (content_type != "" && content_type.starts_with(content_constrant.value));
-    });
-    if(!filter.content_type.empty() && content_it == filter.content_type.end())
-        return false;
-    
-    auto title_it = std::find_if(filter.title.begin(), filter.title.end(), [content_type](const auto& title_constrant){
-        return title_constrant.negate ^ (content_type != "" && content_type.starts_with(title_constrant.value));
-    });
-    if(!filter.title.empty() && title_it == filter.title.end())
-        return false;
-
-    return true;
+    LOG_DEBUG << "Legacy ranking SQL query time: " << sql_time.count() << "ms";
+    co_return deduplicateRankedResults(nodes, is_root, query_str);
 }
 
 Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
@@ -707,6 +1212,12 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     auto t1 = high_resolution_clock::now();
 
     auto input = utils::urlDecode(req->getParameter("query"));
+    if(input.size() > 1024) {
+        auto resp = HttpResponse::newHttpResponse();
+        resp->addHeader("meta", "Search query is too long");
+        resp->setStatusCode(k400BadRequest);
+        co_return resp;
+    }
     auto [query_str, filter] = parseSearchQuery(input);
     std::transform(query_str.begin(), query_str.end(), query_str.begin(), ::tolower);
 
@@ -720,72 +1231,64 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     using RankedResults = std::vector<RankedResult>;
 
     static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
-    auto page = tlgs::try_strtoull(std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
-    const size_t current_page_idx = page - 1;
+    const auto requested_page = tlgs::try_strtoull(
+        std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
+    const size_t current_page_idx = std::max<uint64_t>(requested_page, 1) - 1;
 
     static const size_t fixed_random = std::random_device()();
     const auto hasher = std::hash<std::string>();
     const auto filter_hasher = std::hash<SearchFilter>();
     const auto query_hash = hasher(query_str)^fixed_random;
     const auto filter_hash = filter_hasher(filter)^fixed_random;
-    const auto raw_result_cache_key = query_str + "|" + std::to_string(query_hash);
-    const auto filtered_result_cache_key = raw_result_cache_key + "|" + std::to_string(filter_hash);
+    const auto filtered_result_cache_key = query_str + "|" + std::to_string(query_hash)
+        + "|" + std::to_string(filter_hash);
     std::string cache_status = "(fully cached)";
 
     std::shared_ptr<RankedResults> filtered_result;
     if(result_cache.findAndFetch(filtered_result_cache_key, filtered_result) == false) {
-        std::shared_ptr<RankedResults> ranked_result;
-        if(result_cache.findAndFetch(raw_result_cache_key, ranked_result) == false) {
-            ranked_result = std::make_shared<RankedResults>(co_await pageSearch(query_str));
-            result_cache.insert(raw_result_cache_key, ranked_result, cache_time);
-            cache_status = "";
-        }
-        else {
-            cache_status = "(raw cached)";
-        }
-        // should not happen
-        if(ranked_result == nullptr)
-            throw std::runtime_error("search result is nullptr");
-        if(filter.empty() == false) {
-            filtered_result = std::make_shared<RankedResults>();
-            for(const auto& item : *ranked_result) {
-                if(evalFilter(tlgs::Url(item.url).host(), item.content_type, item.size, filter))
-                    filtered_result->push_back(item);
-            }
-        }
-        else {
-            filtered_result = ranked_result;
-        }
+        filtered_result = std::make_shared<RankedResults>(
+            co_await pageSearch(query_str, filter));
+        cache_status = "";
         result_cache.insert(filtered_result_cache_key, filtered_result, cache_time);
     }
 
     if(filtered_result == nullptr)
         throw std::runtime_error("filtered search result is nullptr");
 
-    const size_t item_per_page = 10;
-    auto begin = filtered_result->begin()+item_per_page*current_page_idx;
-    auto end = filtered_result->begin()+std::min(size_t{item_per_page*(current_page_idx+1)}, filtered_result->size());
-    if(begin > end)
-        begin = end;
-    // XXX: Drogon's raw SQL querys does not support arrays/sets 
-    // Preperbally a bad idea to use string concat for SQL. But we do ignore bad strings
-    std::string url_array;
+    const auto result_count = filtered_result->size();
+    const size_t offset = current_page_idx > result_count / search_results_per_page
+        ? result_count
+        : std::min(current_page_idx * search_results_per_page, result_count);
+    const size_t end_offset = std::min(offset + search_results_per_page, result_count);
+    auto begin = filtered_result->begin() + offset;
+    auto end = filtered_result->begin() + end_offset;
+
+    nlohmann::json selected_urls = nlohmann::json::array();
     for(const auto& item : std::ranges::subrange(begin, end)) {
-        if(item.url.find('\'') == std::string::npos)
-            url_array += "'"+item.url+"', ";
+        selected_urls.push_back(item.url);
     }
-    if(url_array.size() != 0)
-        url_array.resize(url_array.size()-2);
 
     std::vector<SearchResult> search_result;
-    if(!url_array.empty()) {
+    if(!selected_urls.empty()) {
         // HACK: Use the first 5K characters for highligh search. This is MUCH faster
         // without loosing too much accuracy
         auto db = app().getDbClient();
-        auto page_data = co_await db->execSqlCoro("SELECT url, size, title, content_type, "
-            "ts_headline(SUBSTRING(content_body, 0, 5000), plainto_tsquery($1), 'StartSel=\"[\", "
-                "StopSel=\"]\", MinWords=23, MaxWords=37, MaxFragments=1, FragmentDelimiter=\" ... \"') AS preview, "
-            "last_crawl_success_at FROM pages WHERE url IN ("+url_array+");", query_str);
+        auto page_data = co_await db->execSqlCoro(R"sql(
+            SELECT pages.url, pages.size, pages.title, pages.content_type,
+                   CASE WHEN pages.english_search_vector IS NOT NULL
+                        THEN ts_headline('english', SUBSTRING(pages.content_body, 0, 5000),
+                                         websearch_to_tsquery('english', $1),
+                                         'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
+                                         'MaxFragments=1, FragmentDelimiter=" ... "')
+                        ELSE ts_headline('simple', SUBSTRING(pages.content_body, 0, 5000),
+                                         websearch_to_tsquery('simple', $1),
+                       'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
+                                         'MaxFragments=1, FragmentDelimiter=" ... "') END AS preview,
+                   pages.last_crawl_success_at
+            FROM pages
+            JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
+              ON requested.url=pages.url
+        )sql", query_str, selected_urls.dump());
 
         std::unordered_map<std::string, size_t> result_idx;
         for(size_t i=0;i<page_data.size();i++) {
@@ -807,7 +1310,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
                 .content_type = page["content_type"].as<std::string>(),
                 .preview = page["preview"].as<std::string>(),
                 .last_crawled_at = trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
-                    .toCustomedFormattedString("%Y-%m-%d %H:%M:%S", false),
+                    .toCustomFormattedString("%Y-%m-%d %H:%M:%S", false),
                 .size = page["size"].as<uint64_t>(),
                 .score = item.score
             };
@@ -825,7 +1328,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     data["encoded_search_term"] = encoded_search_term;
     data["total_results"] = filtered_result->size();
     data["current_page_idx"] = current_page_idx;
-    data["item_per_page"] = item_per_page;
+    data["item_per_page"] = search_results_per_page;
     data["search_query"] = input; 
 
     auto resp = HttpResponse::newHttpViewResponse("search_result", data);

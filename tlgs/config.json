@@ -5,11 +5,24 @@
     "db_clients": [
        {
            "rdbms": "postgresql",
-           "host": "127.0.0.1",
+           "host": "/run/postgresql",
            "port": 5432,
            "dbname": "tlgs",
+           "user": "tlgs",
+           "username": "tlgs",
            "number_of_connections": 4,
            "timeout": 10
        }
-    ]
+    ],
+    "custom_config": {
+        "tardis": {
+            "endpoint": "gemini://tardis.northwire.xyz",
+            "mode": "tlgs",
+            "certificate": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-cert.pem",
+            "private_key": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-key.pem",
+            "mime_types": "text/gemini,text/plain,text/markdown",
+            "maximum_body_bytes": 2500000,
+            "page_size": 100
+        }
+    }
 }

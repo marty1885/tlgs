@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 #include <optional>
@@ -8,6 +10,7 @@
 #include <trantor/net/EventLoop.h>
 #include <drogon/utils/coroutine.h>
 
+struct TardisCapture;
 
 class GeminiCrawler : public trantor::NonCopyable
 {
@@ -16,7 +19,8 @@ public:
     template<typename T>
     using Task = drogon::Task<T>;
 
-    GeminiCrawler(EventLoop* loop) : loop_(loop) {}
+    explicit GeminiCrawler(EventLoop* loop);
+    ~GeminiCrawler();
 
     /**
      * @brief Adds a url to the crawling queue.
@@ -90,6 +94,8 @@ public:
     {
         force_reindex_ = enable;
     }
+
+    Task<void> syncTardis(const Json::Value& config, size_t maximumPages = 0);
 protected:
     /**
      * @brief Launches up to max_concurrent_connections_ concurrent crawler tasks (not threads)
@@ -121,7 +127,7 @@ protected:
      * 
      * @param url_str the URL to crawl
      */
-    Task<bool> crawlPage(const std::string& url_str);
+    Task<bool> crawlPage(const std::string& url_str, bool retry_after_timeout = false);
 
     EventLoop* loop_;
     tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
@@ -130,4 +136,6 @@ protected:
     std::atomic<size_t> ongoing_crawlings_ = 0;
     std::atomic<bool> ended_ = false;
     bool force_reindex_ = false;
+    std::unordered_map<std::string, TardisCapture> tardis_captures_;
+    bool tardis_active_ = false;
 };

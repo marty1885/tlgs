@@ -45,3 +45,5 @@ trace.json
 .cache/
 compile_commands.json
 
+# Local credentials for the authenticated TARDIS Gemini client.
+.tardis-client/

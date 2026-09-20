@@ -9,7 +9,7 @@ struct SearchResult
     std::string preview;
     std::string last_crawled_at;
     size_t size;
-    float score;
+    double score;
 };
 
 struct ServerStatistics

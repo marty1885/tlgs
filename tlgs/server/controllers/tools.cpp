@@ -1,6 +1,7 @@
 #include <drogon/HttpController.h>
 #include <drogon/utils/coroutine.h>
 #include <drogon/HttpAppFramework.h>
+#include <dremini/GeminiClient.hpp>
 #include <tlgsutils/url_parser.hpp>
 #include "search_result.hpp"
 
@@ -116,16 +117,54 @@ Task<HttpResponsePtr> ToolsController::add_seed(HttpRequestPtr req)
         co_return resp;
     }
 
-    // HACK: Force slow down
-    co_await drogon::sleepCoro(app().getLoop(), 0.75);
+    const auto &tardis = app().getCustomConfig()["tardis"];
+    const auto endpoint = tardis.get("endpoint", "").asString();
+    const auto certificate = tardis.get("certificate", "").asString();
+    const auto privateKey = tardis.get("private_key", "").asString();
+    if(endpoint.empty() || certificate.empty() || privateKey.empty()) {
+        LOG_ERROR << "TARDIS client certificate is not configured";
+        auto resp = HttpResponse::newHttpResponse();
+        resp->setBody("TLGS cannot submit capsules right now");
+        resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
+        resp->setStatusCode((HttpStatusCode)40);
+        co_return resp;
+    }
 
-    auto db = app().getDbClient();
-    co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
-        "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
-        url.str(), url.host(), url.port(1965));
+    HttpResponsePtr tardisResponse;
+    try {
+        auto policy = dremini::withClientCert(certificate, privateKey);
+        tardisResponse = co_await dremini::sendRequestCoro(
+            endpoint + "/add_seed?" + utils::urlEncodeComponent(url.str()), 30,
+            app().getLoop(), 1024 * 1024, {}, 60, std::move(policy));
+    } catch(const std::exception &exception) {
+        LOG_ERROR << "TARDIS add_seed request failed: " << exception.what();
+        auto resp = HttpResponse::newHttpResponse();
+        resp->setBody("TARDIS is unavailable; please try again later");
+        resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
+        resp->setStatusCode((HttpStatusCode)40);
+        co_return resp;
+    }
+
+    const auto geminiStatus = tardisResponse->getHeader("gemini-status");
+    const auto meta = tardisResponse->getHeader("meta");
+    int status = 50;
+    try {
+        status = std::stoi(geminiStatus);
+    } catch(const std::exception &) {
+        LOG_ERROR << "TARDIS add_seed returned an invalid Gemini status: " << geminiStatus;
+    }
+
+    if(status >= 20 && status < 30) {
+        auto db = app().getDbClient();
+        co_await db->execSqlCoro("INSERT INTO pages (url, domain_name, port, first_seen_at) "
+            "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING;",
+            url.str(), url.host(), url.port(1965));
+    }
     
     auto resp = HttpResponse::newHttpResponse();
-    resp->setBody("# Adding Capsule\nAdded " + input);
+    resp->setStatusCode((HttpStatusCode)status);
+    resp->addHeader("meta", meta);
+    resp->setBody(std::string(tardisResponse->body()));
     resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
     co_return resp;
 }

@@ -109,6 +109,44 @@ DROGON_TEST(GeminiParserLink)
     CHECK(nodes[0].meta == "gemini://example.com");
 }
 
+DROGON_TEST(GeminiRecommendationContext)
+{
+    const auto doc = tlgs::extractGeminiConcise(R"(# Capsule title
+## Software
+### Search
+=> gemini://example.org/tlgs TLGS search engine
+## Writing
+=> gemini://example.org/post A post
+)");
+
+    REQUIRE(doc.recommendations.size() == 2);
+    CHECK(doc.recommendations[0].target == "gemini://example.org/tlgs");
+    CHECK(doc.recommendations[0].label == "TLGS search engine");
+    CHECK(doc.recommendations[0].qualifying_text ==
+          "Capsule title\nSoftware\nSearch\nTLGS search engine");
+    CHECK(doc.recommendations[1].qualifying_text ==
+          "Capsule title\nWriting\nA post");
+    CHECK(doc.title == "Capsule title");
+    CHECK(doc.headings == "Software\nSearch\nWriting\n");
+    CHECK(doc.link_text == "TLGS search engine\nA post\n");
+    CHECK(doc.text.empty());
+}
+
+DROGON_TEST(GeminiSearchFields)
+{
+    const auto doc = tlgs::extractGeminiConcise(R"(# Page title
+Introductory prose.
+## Section heading
+More prose.
+=> gemini://example.org A useful link
+)");
+
+    CHECK(doc.title == "Page title");
+    CHECK(doc.headings == "Section heading\n");
+    CHECK(doc.link_text == "A useful link\n");
+    CHECK(doc.text == "Introductory prose.\nMore prose.\n");
+}
+
 DROGON_TEST(GeminiParserArticle)
 {
     auto art1 = 

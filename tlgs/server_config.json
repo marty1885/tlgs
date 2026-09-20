@@ -72,8 +72,16 @@
 		}
 	 ],
 	 "custom_config": {
+		 "tardis": {
+			 "endpoint": "gemini://tardis.northwire.xyz",
+			 "certificate": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-cert.pem",
+			 "private_key": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-key.pem"
+		 },
 		 "tlgs": {
-			 "ranking_algo": "salsa"
+			 "ranking_algo": "fusion",
+			 "fusion_graph_weight": 1.0,
+			 "fusion_site_decay": 0.5,
+			 "fusion_max_site_results_per_page": 2
 		 }
 	 }
 }

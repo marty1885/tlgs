@@ -2,7 +2,7 @@
 #include "search_result.hpp"
 #include <drogon/utils/Utilities.h>
 #include <tlgsutils/url_parser.hpp>
-#include <fmt/core.h>
+#include <fmt/format.h>
 %>
 <%view header %>
 

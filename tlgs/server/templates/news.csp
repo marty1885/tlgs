@@ -1,5 +1,11 @@
 <%view header %>
 
+### 2029-09-?? TLGS 2.0!
+
+I ended up rewriting almost the entirty of TLGS. It should run MUCH better compared to the previous version. Had to drop SALSA in favor of cheaper graph evaulations and redesign FTS... overall it should be several times faster and no longer timeout. Also the crawler has been seperated into TARDIS, an unified Geminispace crawler that is awlways running - for both arhival and indexing. 
+
+=> gemini://tardis.northwire.xyz/ TARDIS
+
 ### 2026-07-27 I'm back
 
 After a long time off the Gemini space I am back. It seems the Geminispace has grown a lot and the performance of TLGS' search is not catching up with it leading to some search timeouts. Oops.. Patched the database queries a bit and some changes to the cralwer... it should work better now. I still need to rework the DB to ensure it scales as Gemini grows. But for now it works well enough.
