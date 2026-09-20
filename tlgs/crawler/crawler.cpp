@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cctype>
 #include <random>
 #include <stdexcept>
 #include <algorithm>
@@ -85,6 +86,21 @@ std::string sampleUtf8(const std::string_view text, const size_t maximum)
     }
     return sample;
 }
+
+std::string mimeFromMeta(const std::string_view meta)
+{
+    const auto separator = meta.find(';');
+    const auto untrimmed = meta.substr(0, separator);
+    const auto first = untrimmed.find_first_not_of(" \t");
+    if(first == std::string_view::npos)
+        return {};
+    const auto last = untrimmed.find_last_not_of(" \t");
+    std::string mime(untrimmed.substr(first, last - first + 1));
+    std::transform(mime.begin(), mime.end(), mime.begin(), [](const unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return mime;
+}
 }
 
 GeminiCrawler::GeminiCrawler(EventLoop* loop) : loop_(loop) {}
@@ -132,12 +148,44 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
             }
 
             // A metadata-only change (including a body excluded by
-            // body-mime) is still an inventory update.  Record it without
-            // passing an empty body to crawlPage(), which would otherwise
-            // replace an existing indexed document with empty content.
+            // body-mime) is still an inventory update.  A successful
+            // non-text capture is also searchable by its path, as it was in
+            // the pre-TARDIS crawler.  Do not send it through crawlPage():
+            // an absent WARC body is not an empty representation.
             const tlgs::Url parsed_url(url);
             if(!parsed_url.good() || parsed_url.str() != url) {
                 LOG_WARN << "Ignoring invalid TARDIS URL " << url;
+                continue;
+            }
+            const auto mime = mimeFromMeta(capture.meta);
+            if(capture.status / 10 == 2 && !mime.starts_with("text/")) {
+                auto title = parsed_url.str();
+                truncateUtf8(title, 1000);
+                auto index_friendly_url = indexFriendly(parsed_url);
+                truncateUtf8(index_friendly_url, 2000);
+                const auto indexed_content_hash = tlgs::xxHash64(title + '\n' + index_friendly_url);
+                const auto raw_content_hash = tlgs::xxHash64("");
+                co_await db->execSqlCoro(
+                    "INSERT INTO pages(url, domain_name, port, content_type, title, content_body, size, "
+                    "first_seen_at, last_crawled_at, last_crawl_success_at, last_indexed_at, last_status, last_meta, "
+                    "indexed_content_hash, raw_content_hash, has_explicit_title, search_headings, search_link_text, "
+                    "search_schema_version, search_vector, english_search_vector, title_vector) "
+                    "VALUES ($1, $2, $3, $4, $5, '', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                    "CURRENT_TIMESTAMP, $6, $7, $8, $9, false, '', '', 3, "
+                    "setweight(to_tsvector('simple', $5), 'A') || setweight(to_tsvector('simple', $10), 'C'), "
+                    "setweight(to_tsvector('english', $5), 'A') || setweight(to_tsvector('english', $10), 'C'), "
+                    "to_tsvector('simple', $5)) "
+                    "ON CONFLICT(url) DO UPDATE SET content_type = EXCLUDED.content_type, title = EXCLUDED.title, "
+                    "content_body = EXCLUDED.content_body, size = EXCLUDED.size, last_crawled_at = EXCLUDED.last_crawled_at, "
+                    "last_crawl_success_at = EXCLUDED.last_crawl_success_at, last_indexed_at = EXCLUDED.last_indexed_at, "
+                    "last_status = EXCLUDED.last_status, last_meta = EXCLUDED.last_meta, "
+                    "indexed_content_hash = EXCLUDED.indexed_content_hash, raw_content_hash = EXCLUDED.raw_content_hash, "
+                    "has_explicit_title = EXCLUDED.has_explicit_title, search_headings = EXCLUDED.search_headings, "
+                    "search_link_text = EXCLUDED.search_link_text, search_schema_version = EXCLUDED.search_schema_version, "
+                    "search_vector = EXCLUDED.search_vector, english_search_vector = EXCLUDED.english_search_vector, "
+                    "title_vector = EXCLUDED.title_vector;",
+                    parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, title, capture.status, capture.meta,
+                    indexed_content_hash, raw_content_hash, index_friendly_url);
                 continue;
             }
             co_await db->execSqlCoro(
