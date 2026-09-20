@@ -133,6 +133,12 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
         batch = nextBatch == manifest.end() || nextBatch->is_null() ? "" : nextBatch->get<std::string>();
     }
     for(const auto &entry : update.at("results")) {
+        // Removal events only revoke this mode's view of a page.  TLGS keeps
+        // its existing indexed record, so do not turn a removal into a
+        // synthetic failed crawl (the event has no status or metadata).
+        if(entry.value("action", "upsert") == "remove")
+            continue;
+
         // A failed crawl can have no Gemini response at all.  TARDIS then
         // omits status_code and supplies only its failure metadata.  Preserve
         // that as status 0 so the crawler records the failure instead of
