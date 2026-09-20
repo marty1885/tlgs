@@ -34,7 +34,9 @@ include_directories(.)
 add_subdirectory(tlgsutils)
 add_subdirectory(tlgs)
 
-install(FILES systemd/tlgs_crawler.service systemd/tlgs_crawler.timer systemd/tlgs_server.service DESTINATION /etc/systemd/)
-install(FILES systemd/tlgs.conf DESTINATION lib/sysuser.d)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    install(FILES systemd/tlgs_crawler.service systemd/tlgs_crawler.timer systemd/tlgs_server.service DESTINATION /etc/systemd/)
+    install(FILES systemd/tlgs.conf DESTINATION lib/sysuser.d)
+endif()
 
 include(Package.cmake)
