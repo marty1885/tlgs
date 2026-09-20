@@ -85,17 +85,19 @@ std::unordered_map<std::string, std::string> parseWarcResources(std::string_view
 }
 
 TardisClient::TardisClient(trantor::EventLoop *loop, std::string endpoint, std::string certificate,
-                           std::string privateKey, std::string mode, int64_t maximumBodyBytes, size_t pageSize,
-                           std::string mimeTypes)
+                           std::string privateKey, std::string mode, size_t pageSize,
+                           std::string changeMimeTypes, std::string bodyMimeTypes)
     : loop_(loop), endpoint_(std::move(endpoint)), certificate_(std::move(certificate)),
-      privateKey_(std::move(privateKey)), mode_(std::move(mode)), maximumBodyBytes_(maximumBodyBytes),
-      pageSize_(pageSize), mimeTypes_(std::move(mimeTypes)) {}
+      privateKey_(std::move(privateKey)), mode_(std::move(mode)), pageSize_(pageSize),
+      changeMimeTypes_(std::move(changeMimeTypes)),
+      bodyMimeTypes_(std::move(bodyMimeTypes)) {}
 
 Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::string &pageToken)
 {
     auto policy = dremini::withClientCert(certificate_, privateKey_);
     std::string request = endpoint_ + "/api/v1/updates/" + mode_ + "/" + std::to_string(since) + "/" + std::to_string(till)
-        + "/mime/" + encodePathSegment(mimeTypes_) + "/size/" + std::to_string(maximumBodyBytes_);
+        + "/mime/" + encodePathSegment(changeMimeTypes_)
+        + "/body-mime/" + encodePathSegment(bodyMimeTypes_);
     if(!pageToken.empty()) request += "/page/" + encodePathSegment(pageToken);
     request += "/limit/" + std::to_string(pageSize_);
     auto response = co_await dremini::sendRequestCoro(request, 30, loop_, 8 * 1024 * 1024, {}, 60, std::move(policy));
@@ -117,7 +119,12 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
         if(manifestIt == resources.end()) throw std::runtime_error("TARDIS batch has no manifest");
         const auto manifest = nlohmann::json::parse(manifestIt->second);
         for(const auto &entry : manifest.at("results")) {
-            if(!entry.contains("warc_target_uri")) continue;
+            // The manifest covers every change, while WARC records are only
+            // present for bodies selected by body-mime.  Do not mistake an
+            // excluded body for an empty representation.
+            if(entry.value("body_state", "unavailable") != "included") continue;
+            if(!entry.contains("warc_target_uri"))
+                throw std::runtime_error("TARDIS included batch body has no WARC target URI");
             const auto body = resources.find(entry.at("warc_target_uri").get<std::string>());
             if(body == resources.end()) throw std::runtime_error("TARDIS batch body is missing");
             bodies[entry.at("url").get<std::string>()] = body->second;
@@ -127,7 +134,10 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
     }
     for(const auto &entry : update.at("results")) {
         TardisCapture capture{.url = entry.at("url").get<std::string>(), .status = entry.at("status_code").get<int>(), .meta = entry.value("meta", "")};
-        if(const auto body = bodies.find(capture.url); body != bodies.end()) capture.body = body->second;
+        if(const auto body = bodies.find(capture.url); body != bodies.end()) {
+            capture.body = body->second;
+            capture.hasBody = true;
+        }
         page.captures.push_back(std::move(capture));
     }
     co_return page;

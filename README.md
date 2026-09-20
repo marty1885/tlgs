@@ -46,7 +46,7 @@ make -j
 
 ### Creating and maintaining the index
 
-TLGS imports the [TARDIS](gemini://tardis.northwire.xyz) incremental update feed. Configure the registered client certificate and key in `config.json` under `tardis`. The crawler automatically stores its completed full-sync timestamp and an in-progress stable feed window in PostgreSQL, so it resumes an interrupted daily run from the server-provided paging token.
+TLGS imports the [TARDIS](gemini://tardis.northwire.xyz) incremental update feed. Configure the registered client certificate and key in `config.json` under `tardis`. `change_mime_types` controls the inventory of changed pages returned by TARDIS (`"*"` includes all MIME types), while `body_mime_types` controls which of those pages include bodies in the batch WARC; the sample fetches only the text MIME types TLGS indexes. Omitted `body_mime_types` defaults to `change_mime_types`. The crawler automatically stores its completed full-sync timestamp and an in-progress stable feed window in PostgreSQL, so it resumes an interrupted daily run from the server-provided paging token.
 
 To create the initial index:
 

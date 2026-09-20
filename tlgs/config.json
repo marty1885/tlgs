@@ -20,8 +20,8 @@
             "mode": "tlgs",
             "certificate": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-cert.pem",
             "private_key": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-key.pem",
-            "mime_types": "text/gemini,text/plain,text/markdown",
-            "maximum_body_bytes": 2500000,
+            "change_mime_types": "*",
+            "body_mime_types": "text/gemini,text/plain,text/markdown,text/x-rst,plaintext",
             "page_size": 100
         }
     }

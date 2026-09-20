@@ -98,9 +98,12 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
     if(certificate.empty() || private_key.empty())
         throw std::runtime_error("tardis.certificate and tardis.private_key are required");
     const auto mode = config.get("mode", "tlgs").asString();
-    const auto size = config.get("maximum_body_bytes", 2500000).asInt64();
     const auto limit = static_cast<size_t>(config.get("page_size", 100).asUInt());
-    const auto mimes = config.get("mime_types", "text/gemini,text/plain,text/markdown").asString();
+    // `mime_types` was the pre-body-filter configuration.  Retain it as a
+    // fallback so existing deployments keep their previous behaviour.
+    const auto change_mimes = config.get("change_mime_types",
+        config.get("mime_types", "text/gemini,text/plain,text/markdown,text/x-rst,plaintext")).asString();
+    const auto body_mimes = config.get("body_mime_types", change_mimes).asString();
     auto db = app().getDbClient();
     co_await db->execSqlCoro("CREATE TABLE IF NOT EXISTS crawler_sync_state (source text PRIMARY KEY, last_full_sync_unix_millis bigint NOT NULL DEFAULT 0, window_since bigint, window_till bigint, resume_token text);");
     auto state = co_await db->execSqlCoro("SELECT last_full_sync_unix_millis, window_since, window_till, resume_token FROM crawler_sync_state WHERE source = 'tardis';");
@@ -113,7 +116,8 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         if(!state[0]["resume_token"].isNull()) token = state[0]["resume_token"].as<std::string>();
     }
     else co_await db->execSqlCoro("INSERT INTO crawler_sync_state(source, last_full_sync_unix_millis, window_since, window_till) VALUES ('tardis', 0, $1, $2);", since, till);
-    TardisClient client(loop_, endpoint, certificate, private_key, mode, size, limit, mimes);
+    TardisClient client(loop_, endpoint, certificate, private_key, mode, limit,
+                        change_mimes, body_mimes);
     size_t pages = 0;
     while(true) {
         auto page = co_await client.updates(since, till, token);
@@ -121,8 +125,27 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         ended_ = false;
         for(auto &capture : page.captures) {
             const auto url = capture.url;
-            tardis_captures_.emplace(url, std::move(capture));
-            craw_queue_.push(url);
+            if(capture.hasBody) {
+                tardis_captures_.emplace(url, std::move(capture));
+                craw_queue_.push(url);
+                continue;
+            }
+
+            // A metadata-only change (including a body excluded by
+            // body-mime) is still an inventory update.  Record it without
+            // passing an empty body to crawlPage(), which would otherwise
+            // replace an existing indexed document with empty content.
+            const tlgs::Url parsed_url(url);
+            if(!parsed_url.good() || parsed_url.str() != url) {
+                LOG_WARN << "Ignoring invalid TARDIS URL " << url;
+                continue;
+            }
+            co_await db->execSqlCoro(
+                "INSERT INTO pages(url, domain_name, port, first_seen_at, last_crawled_at, last_status, last_meta) "
+                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $4, $5) "
+                "ON CONFLICT(url) DO UPDATE SET last_crawled_at = CURRENT_TIMESTAMP, "
+                "last_status = EXCLUDED.last_status, last_meta = EXCLUDED.last_meta;",
+                parsed_url.str(), parsed_url.host(), parsed_url.port(), capture.status, capture.meta);
         }
         co_await crawlAll();
         if(page.hasMore) {

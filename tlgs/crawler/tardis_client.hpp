@@ -14,6 +14,10 @@ struct TardisCapture
     int status = 0;
     std::string meta;
     std::string body;
+    // A body can legitimately be empty, so this must not be inferred from
+    // body.empty().  TARDIS can return a metadata-only change when the body
+    // MIME filter excludes it.
+    bool hasBody = false;
 };
 
 struct TardisPage
@@ -28,8 +32,8 @@ class TardisClient
 {
   public:
     TardisClient(trantor::EventLoop *loop, std::string endpoint, std::string certificate,
-                 std::string privateKey, std::string mode, int64_t maximumBodyBytes,
-                 size_t pageSize, std::string mimeTypes);
+                 std::string privateKey, std::string mode, size_t pageSize,
+                 std::string changeMimeTypes, std::string bodyMimeTypes);
 
     drogon::Task<TardisPage> updates(int64_t since, int64_t till,
                                      const std::string &pageToken = {});
@@ -37,7 +41,7 @@ class TardisClient
   private:
     trantor::EventLoop *loop_;
     std::string endpoint_, certificate_, privateKey_, mode_;
-    int64_t maximumBodyBytes_;
     size_t pageSize_;
-    std::string mimeTypes_;
+    std::string changeMimeTypes_;
+    std::string bodyMimeTypes_;
 };
