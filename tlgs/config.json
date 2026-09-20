@@ -22,7 +22,7 @@
             "private_key": "/home/marty/Documents/tlgs/.tardis-client/tlgs-tardis-client-key.pem",
             "change_mime_types": "*",
             "body_mime_types": "text/gemini,text/plain,text/markdown,text/x-rst",
-            "page_size": 100
+            "page_size": 500
         }
     }
 }
