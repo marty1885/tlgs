@@ -21,7 +21,6 @@ using namespace drogon;
 namespace
 {
 constexpr size_t search_results_per_page = 10;
-constexpr size_t fusion_bm25_candidate_limit = 10000;
 constexpr size_t fusion_candidate_limit = 1000;
 constexpr size_t fusion_raw_candidate_limit = 5000;
 constexpr size_t fusion_graph_candidate_limit = 250;
@@ -688,12 +687,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     auto fts_task = executeTimed(
         [db, query_str, filter_json, site_decay=fusion_site_decay]() {
         return db->execSqlCoro(R"sql(
-        WITH query AS (
-            SELECT websearch_to_tsquery('simple', $1) AS simple,
-                   websearch_to_tsquery('english', $1) AS english,
-                   phraseto_tsquery('simple', $1) AS simple_phrase,
-                   phraseto_tsquery('english', $1) AS english_phrase
-        ), filters AS (
+        WITH filters AS (
             SELECT $5::jsonb AS value
         ), active AS (
             SELECT (
@@ -704,10 +698,11 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         ), lexical_matches AS NOT MATERIALIZED (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash, pages.domain_name, pages.port,
-                   pages.search_vector, pages.english_search_vector,
-                   pages.title_vector
+                   public.tlgs_bm25_document(
+                       pages.title, pages.search_headings, pages.search_link_text,
+                       pages.url, pages.content_body) <@>
+                       to_bm25query($1, 'pages_bm25_search_idx') AS bm25_score
             FROM pages
-            CROSS JOIN query
             CROSS JOIN filters
             WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
                 NOT EXISTS (
@@ -766,33 +761,16 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                       AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
                 )
               ))
-            ORDER BY public.tlgs_bm25_document(
-                         pages.title, pages.search_headings, pages.search_link_text,
-                         pages.url, pages.content_body) <@>
-                         to_bm25query($1, 'pages_bm25_search_idx'),
-                     pages.url
-            LIMIT $6
+            ORDER BY bm25_score, pages.url
+            LIMIT $2
         ), lexical_scored AS (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash AS content_hash,
                    concat('gemini://', lower(pages.domain_name),
                           CASE WHEN pages.port = 1965 THEN ''
                                ELSE ':' || pages.port::text END) AS physical_site,
-                   (CASE WHEN pages.search_vector @@ query.simple THEN
-                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.search_vector, query.simple, 1), 0.5)
-                    ELSE 0.8 * (
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.english_search_vector, query.english, 1), 0.5)
-                    ) END)::double precision AS fts_score
+                   (-pages.bm25_score)::double precision AS fts_score
             FROM lexical_matches pages
-            CROSS JOIN query
         ), lexical_pool AS MATERIALIZED (
             SELECT * FROM lexical_scored
             ORDER BY fts_score DESC
@@ -831,7 +809,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", query_str, fusion_raw_candidate_limit, fusion_candidate_limit,
-        site_decay, filter_json, fusion_bm25_candidate_limit);
+        site_decay, filter_json);
     });
 
     auto hilltop_task = executeTimed(
