@@ -23,6 +23,7 @@ namespace
 constexpr size_t search_results_per_page = 10;
 constexpr size_t fusion_candidate_limit = 1000;
 constexpr size_t fusion_bm25_candidate_limit = 5000;
+constexpr size_t fusion_title_candidate_limit = 1000;
 constexpr size_t fusion_graph_candidate_limit = 250;
 constexpr double fusion_rrf_constant = 60.0;
 
@@ -689,9 +690,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         return db->execSqlCoro(R"sql(
         WITH query AS (
             SELECT websearch_to_tsquery('simple', $1) AS simple,
-                   websearch_to_tsquery('english', $1) AS english,
-                   phraseto_tsquery('simple', $1) AS simple_phrase,
-                   phraseto_tsquery('english', $1) AS english_phrase
+                   phraseto_tsquery('simple', $1) AS simple_phrase
         ), filters AS (
             SELECT $5::jsonb AS value
         ), active AS (
@@ -700,8 +699,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 FROM site_identity_state
                 WHERE singleton=TRUE
             ) AS ruleset_id
-        ), lexical_matches AS MATERIALIZED (
-            SELECT pages.url
+        ), eligible AS NOT MATERIALIZED (
+            SELECT pages.*
             FROM pages
             CROSS JOIN filters
             WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
@@ -761,35 +760,52 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                       AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
                 )
               ))
+        ), bm25_matches AS MATERIALIZED (
+            SELECT pages.url,
+                   public.tlgs_bm25_document(
+                       pages.title, pages.search_headings, pages.search_link_text,
+                       pages.url, pages.content_body) <@>
+                       to_bm25query($1, 'pages_bm25_search_idx') AS bm25_distance
+            FROM eligible pages
             ORDER BY public.tlgs_bm25_document(
                          pages.title, pages.search_headings, pages.search_link_text,
                          pages.url, pages.content_body) <@>
                      to_bm25query($1, 'pages_bm25_search_idx')
             LIMIT $2
+        ), title_matches AS MATERIALIZED (
+            SELECT pages.url
+            FROM eligible pages
+            CROSS JOIN query
+            WHERE pages.title_vector @@ query.simple
+            ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
+                     pages.url
+            LIMIT $6
+        ), retrieved AS MATERIALIZED (
+            SELECT matches.url, min(matches.bm25_distance) AS bm25_distance
+            FROM (
+                SELECT url, bm25_distance FROM bm25_matches
+                UNION ALL
+                SELECT url, NULL::double precision FROM title_matches
+            ) matches
+            GROUP BY matches.url
         ), lexical_scored AS (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash AS content_hash,
                    concat('gemini://', lower(pages.domain_name),
                           CASE WHEN pages.port = 1965 THEN ''
                                ELSE ':' || pages.port::text END) AS physical_site,
-                   (CASE WHEN pages.search_vector @@ query.simple THEN
-                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.search_vector, query.simple, 1), 0.5)
-                    ELSE 0.8 * (
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.english_search_vector, query.english, 1), 0.5)
-                    ) END)::double precision AS fts_score
-            FROM lexical_matches bm25
-            JOIN pages ON pages.url=bm25.url
+                   (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                    CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
+                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
+                    CASE WHEN retrieved.bm25_distance < 0 THEN
+                        0.5 * (-retrieved.bm25_distance) /
+                        (1.0 - retrieved.bm25_distance)
+                    ELSE 0.0 END)::double precision AS fts_score
+            FROM retrieved
+            JOIN pages ON pages.url=retrieved.url
             CROSS JOIN query
-            WHERE pages.search_vector @@ query.simple
-               OR pages.english_search_vector @@ query.english
+            WHERE retrieved.bm25_distance < 0
+               OR pages.title_vector @@ query.simple
         ), lexical_pool AS MATERIALIZED (
             SELECT * FROM lexical_scored
             ORDER BY fts_score DESC, url
@@ -828,7 +844,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", query_str, fusion_bm25_candidate_limit, fusion_candidate_limit,
-        site_decay, filter_json);
+        site_decay, filter_json, fusion_title_candidate_limit);
     });
 
     auto hilltop_task = executeTimed(
@@ -1066,16 +1082,57 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
     auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
     constexpr size_t max_root_set_size = 1000;
-    constexpr size_t max_rank_candidates = 10000;
-    auto nodes_of_intrest = co_await db->execSqlCoro("WITH candidates AS MATERIALIZED ("
-        "SELECT url FROM pages WHERE search_vector @@ websearch_to_tsquery('simple', $1) LIMIT $2"
-        "), roots AS MATERIALIZED ("
-        "SELECT pages.url, ts_rank_cd(title_vector, websearch_to_tsquery('simple', $1))*50 + "
-        "ts_rank_cd(search_vector, websearch_to_tsquery('simple', $1)) AS rank "
-        "FROM pages JOIN candidates ON pages.url = candidates.url ORDER BY rank DESC LIMIT $3"
-        ") SELECT roots.url AS source_url, pages.cross_site_links, pages.content_type, pages.size, "
-        "pages.indexed_content_hash AS content_hash, roots.rank FROM roots JOIN pages ON pages.url = roots.url "
-        "ORDER BY roots.rank DESC;", query_str, max_rank_candidates, max_root_set_size);
+    constexpr size_t max_rank_candidates = 5000;
+    auto nodes_of_intrest = co_await db->execSqlCoro(R"sql(
+        WITH query AS (
+            SELECT websearch_to_tsquery('simple', $1) AS simple,
+                   phraseto_tsquery('simple', $1) AS phrase
+        ), bm25 AS MATERIALIZED (
+            SELECT pages.url,
+                   public.tlgs_bm25_document(
+                       pages.title, pages.search_headings, pages.search_link_text,
+                       pages.url, pages.content_body) <@>
+                       to_bm25query($1, 'pages_bm25_search_idx') AS distance
+            FROM pages
+            ORDER BY public.tlgs_bm25_document(
+                         pages.title, pages.search_headings, pages.search_link_text,
+                         pages.url, pages.content_body) <@>
+                     to_bm25query($1, 'pages_bm25_search_idx')
+            LIMIT $2
+        ), titles AS MATERIALIZED (
+            SELECT pages.url
+            FROM pages CROSS JOIN query
+            WHERE pages.title_vector @@ query.simple
+            ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
+                     pages.url
+            LIMIT $3
+        ), candidates AS MATERIALIZED (
+            SELECT url, min(distance) AS distance
+            FROM (
+                SELECT url, distance FROM bm25
+                UNION ALL
+                SELECT url, NULL::double precision FROM titles
+            ) matches
+            GROUP BY url
+        ), roots AS MATERIALIZED (
+            SELECT pages.url,
+                   (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                    CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
+                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
+                    CASE WHEN candidates.distance < 0 THEN
+                        0.5 * (-candidates.distance) / (1.0 - candidates.distance)
+                    ELSE 0.0 END) AS rank
+            FROM candidates JOIN pages ON pages.url=candidates.url CROSS JOIN query
+            ORDER BY rank DESC, pages.url
+            LIMIT $3
+        )
+        SELECT roots.url AS source_url, pages.cross_site_links,
+               pages.content_type, pages.size,
+               pages.indexed_content_hash AS content_hash, roots.rank
+        FROM roots JOIN pages ON pages.url=roots.url
+        WHERE roots.rank > 0
+        ORDER BY roots.rank DESC, roots.url
+    )sql", query_str, max_rank_candidates, max_root_set_size);
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
         co_return {};
@@ -1179,7 +1236,7 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
     float max_score = *std::max_element(score.begin(), score.end());
     if(max_score == 0)
         max_score = 1;
-    // Combine the text score and the rank score. Really want to use BM25 as text score
+    // Combine the bounded BM25/title text score with the graph score.
     // XXX: This scoring function works. But it kinda sucks
     for(size_t i=0;i<nodes.size();i++) {
         auto& node = nodes[i];

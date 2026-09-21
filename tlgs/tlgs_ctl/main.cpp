@@ -64,8 +64,7 @@ Task<> createDb()
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_headings text NOT NULL DEFAULT '';");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_link_text text NOT NULL DEFAULT '';");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_schema_version smallint NOT NULL DEFAULT 0;");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS search_vector_index ON public.pages USING gin (search_vector);");
-	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS english_search_vector_index ON public.pages USING gin (english_search_vector);");
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS title_vector_index ON public.pages USING gin (title_vector);");
 	co_await db->execSqlCoro("CREATE EXTENSION IF NOT EXISTS pg_textsearch;");
 	co_await db->execSqlCoro(R"sql(
 		CREATE OR REPLACE FUNCTION public.tlgs_bm25_document(
@@ -819,6 +818,37 @@ Task<> hilltopStatus(bool include_text_search)
     app().quit();
 }
 
+Task<> retireLegacyFtsIndexes()
+{
+    try {
+        auto db = app().getDbClient();
+        const auto indexes = co_await db->execSqlCoro(R"sql(
+            SELECT count(*) AS valid_indexes
+            FROM pg_index
+            WHERE indexrelid IN (
+                to_regclass('public.pages_bm25_search_idx'),
+                to_regclass('public.title_vector_index')
+            ) AND indrelid='public.pages'::regclass
+              AND indisvalid AND indisready
+        )sql");
+        if(indexes[0]["valid_indexes"].as<int>() != 2) {
+            std::cerr << "Refusing to retire legacy FTS indexes: build valid BM25 "
+                         "and title indexes first\n";
+            app().quit();
+            co_return;
+        }
+        // Keep this explicit and outside a transaction so a running server can be
+        // deployed and checked before the old indexes are retired.
+        co_await db->execSqlCoro("DROP INDEX CONCURRENTLY IF EXISTS public.search_vector_index");
+        co_await db->execSqlCoro("DROP INDEX CONCURRENTLY IF EXISTS public.english_search_vector_index");
+        std::cout << "Retired search_vector_index and english_search_vector_index\n";
+    }
+    catch(const std::exception& error) {
+        std::cerr << "Cannot retire legacy FTS indexes: " << error.what() << '\n';
+    }
+    app().quit();
+}
+
 Task<> queryHilltop(std::string query)
 {
     try {
@@ -826,33 +856,51 @@ Task<> queryHilltop(std::string query)
         const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,
-                       websearch_to_tsquery('english', $1) AS english,
-                       phraseto_tsquery('simple', $1) AS simple_phrase,
-                       phraseto_tsquery('english', $1) AS english_phrase
+                       phraseto_tsquery('simple', $1) AS phrase
             ), active AS (
                 SELECT active_ruleset_id AS ruleset_id
                 FROM site_identity_state
                 WHERE singleton=TRUE
+            ), bm25 AS MATERIALIZED (
+                SELECT pages.url,
+                       public.tlgs_bm25_document(
+                           pages.title, pages.search_headings, pages.search_link_text,
+                           pages.url, pages.content_body) <@>
+                           to_bm25query($1, 'pages_bm25_search_idx') AS distance
+                FROM pages
+                ORDER BY public.tlgs_bm25_document(
+                             pages.title, pages.search_headings, pages.search_link_text,
+                             pages.url, pages.content_body) <@>
+                         to_bm25query($1, 'pages_bm25_search_idx')
+                LIMIT $2
+            ), titles AS MATERIALIZED (
+                SELECT pages.url
+                FROM pages CROSS JOIN query
+                WHERE pages.title_vector @@ query.simple
+                ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
+                         pages.url
+                LIMIT $3
+            ), retrieved AS MATERIALIZED (
+                SELECT url, min(distance) AS distance
+                FROM (
+                    SELECT url, distance FROM bm25
+                    UNION ALL
+                    SELECT url, NULL::double precision FROM titles
+                ) matches
+                GROUP BY url
             ), candidates AS MATERIALIZED (
                 SELECT pages.url AS target_url,
                        pages.title,
-                       (CASE WHEN pages.search_vector @@ query.simple THEN
-                           CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                           CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                           CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
-                           least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[], pages.search_vector, query.simple, 1), 0.5)
-                        ELSE 0.8 * (
-                           CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
-                           CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
-                           CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
-                           least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[], pages.english_search_vector, query.english, 1), 0.5)
-                        ) END)::double precision AS text_rank
-                FROM pages
-                CROSS JOIN query
-                WHERE pages.search_vector @@ query.simple
-                   OR pages.english_search_vector @@ query.english
-                ORDER BY text_rank DESC
-                LIMIT 1000
+                       (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                        CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
+                        least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
+                        CASE WHEN retrieved.distance < 0 THEN
+                            0.5 * (-retrieved.distance) / (1.0 - retrieved.distance)
+                        ELSE 0.0 END)::double precision AS text_rank
+                FROM retrieved JOIN pages ON pages.url=retrieved.url CROSS JOIN query
+                WHERE retrieved.distance < 0 OR pages.title_vector @@ query.simple
+                ORDER BY text_rank DESC, pages.url
+                LIMIT $3
             ), site_votes AS MATERIALIZED (
                 SELECT candidates.target_url,
                        edges.expert_site,
@@ -886,7 +934,7 @@ Task<> queryHilltop(std::string query)
             LEFT JOIN authority USING (target_url)
             ORDER BY final_score DESC, candidates.text_rank DESC
             LIMIT 50
-        )sql", query);
+        )sql", query, 5000, 1000);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
 
@@ -971,6 +1019,7 @@ std::string singleLine(std::string text)
 Task<> compareRankings(std::string query)
 {
     constexpr size_t candidate_limit = 1000;
+    constexpr size_t bm25_candidate_limit = 5000;
     constexpr size_t display_limit = 20;
 
     try {
@@ -981,29 +1030,47 @@ Task<> compareRankings(std::string query)
         const auto candidate_rows = co_await db->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,
-                       websearch_to_tsquery('english', $1) AS english,
-                       phraseto_tsquery('simple', $1) AS simple_phrase,
-                       phraseto_tsquery('english', $1) AS english_phrase
+                       phraseto_tsquery('simple', $1) AS phrase
+            ), bm25 AS MATERIALIZED (
+                SELECT pages.url,
+                       public.tlgs_bm25_document(
+                           pages.title, pages.search_headings, pages.search_link_text,
+                           pages.url, pages.content_body) <@>
+                           to_bm25query($1, 'pages_bm25_search_idx') AS distance
+                FROM pages
+                ORDER BY public.tlgs_bm25_document(
+                             pages.title, pages.search_headings, pages.search_link_text,
+                             pages.url, pages.content_body) <@>
+                         to_bm25query($1, 'pages_bm25_search_idx')
+                LIMIT $2
+            ), titles AS MATERIALIZED (
+                SELECT pages.url
+                FROM pages CROSS JOIN query
+                WHERE pages.title_vector @@ query.simple
+                ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
+                         pages.url
+                LIMIT $3
+            ), retrieved AS MATERIALIZED (
+                SELECT url, min(distance) AS distance
+                FROM (
+                    SELECT url, distance FROM bm25
+                    UNION ALL
+                    SELECT url, NULL::double precision FROM titles
+                ) matches
+                GROUP BY url
             )
             SELECT pages.url, pages.title,
-                   (CASE WHEN pages.search_vector @@ query.simple THEN
-                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[], pages.search_vector, query.simple, 1), 0.5)
-                    ELSE 0.8 * (
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[], pages.english_search_vector, query.english, 1), 0.5)
-                    ) END)::double precision AS fts
-            FROM pages
-            CROSS JOIN query
-            WHERE pages.search_vector @@ query.simple
-               OR pages.english_search_vector @@ query.english
-            ORDER BY fts DESC
-            LIMIT $2
-        )sql", query, candidate_limit);
+                   (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                    CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
+                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
+                    CASE WHEN retrieved.distance < 0 THEN
+                        0.5 * (-retrieved.distance) / (1.0 - retrieved.distance)
+                    ELSE 0.0 END)::double precision AS fts
+            FROM retrieved JOIN pages ON pages.url=retrieved.url CROSS JOIN query
+            WHERE retrieved.distance < 0 OR pages.title_vector @@ query.simple
+            ORDER BY fts DESC, pages.url
+            LIMIT $3
+        )sql", query, bm25_candidate_limit, candidate_limit);
         const auto fts_finished = std::chrono::steady_clock::now();
 
         std::vector<ExperimentResult> results;
@@ -1241,6 +1308,8 @@ int main(int argc, char** argv)
 		"rebuild", "Migrate missing structured FTS vectors and rebuild authority recommendations");
 	CLI::App& search_index_status = *search_index.add_subcommand(
 		"status", "Show FTS and authority index statistics");
+	CLI::App& retire_legacy_fts = *search_index.add_subcommand(
+		"retire-legacy", "Drop the two old page FTS GIN indexes after deploying BM25/title search");
 
 	CLI::App& hilltop = *cli.add_subcommand("hilltop", "Hilltop experiments and compatibility commands");
 	hilltop.require_subcommand(1);
@@ -1309,6 +1378,9 @@ int main(int argc, char** argv)
 	}
 	else if(search_index_status || hilltop_status) {
 		app().getLoop()->queueInLoop(async_func(std::bind(hilltopStatus, bool(search_index_status))));
+	}
+	else if(retire_legacy_fts) {
+		app().getLoop()->queueInLoop(async_func(retireLegacyFtsIndexes));
 	}
 	else if(query_hilltop) {
 		app().getLoop()->queueInLoop(async_func(std::bind(queryHilltop, hilltop_query)));
