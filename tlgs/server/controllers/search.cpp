@@ -692,8 +692,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
             SELECT websearch_to_tsquery('simple', $1) AS simple,
                    websearch_to_tsquery('english', $1) AS english,
                    phraseto_tsquery('simple', $1) AS simple_phrase,
-                   phraseto_tsquery('english', $1) AS english_phrase,
-                   to_bm25query($1, 'pages_bm25_search_idx') AS bm25
+                   phraseto_tsquery('english', $1) AS english_phrase
         ), filters AS (
             SELECT $5::jsonb AS value
         ), active AS (
@@ -769,7 +768,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
               ))
             ORDER BY public.tlgs_bm25_document(
                          pages.title, pages.search_headings, pages.search_link_text,
-                         pages.url, pages.content_body) <@> query.bm25,
+                         pages.url, pages.content_body) <@>
+                         to_bm25query($1, 'pages_bm25_search_idx'),
                      pages.url
             LIMIT $6
         ), lexical_scored AS (
