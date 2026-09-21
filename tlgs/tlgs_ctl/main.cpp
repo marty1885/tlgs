@@ -849,9 +849,8 @@ Task<> retireLegacyFtsIndexes()
     app().quit();
 }
 
-Task<nlohmann::json> retrieveBm25Candidates(std::string query)
+Task<nlohmann::json> retrieveBm25Candidates(std::string query, size_t limit)
 {
-    // A literal LIMIT remains visible to pg_textsearch in a generic prepared plan.
     const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
         SELECT pages.url, bm25_get_current_score() AS distance
         FROM pages
@@ -859,8 +858,8 @@ Task<nlohmann::json> retrieveBm25Candidates(std::string query)
                      pages.title, pages.search_headings, pages.search_link_text,
                      pages.url, pages.content_body) <@>
                  to_bm25query($1, 'pages_bm25_search_idx')
-        LIMIT 5000
-    )sql", query);
+        LIMIT $2
+    )sql", query, limit);
     nlohmann::json candidates = nlohmann::json::array();
     for(const auto& row : rows)
         candidates.push_back({
@@ -874,7 +873,7 @@ Task<> queryHilltop(std::string query)
 {
     try {
         const auto started = std::chrono::steady_clock::now();
-        const auto bm25_candidates = co_await retrieveBm25Candidates(query);
+        const auto bm25_candidates = co_await retrieveBm25Candidates(query, 5000);
         const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,
@@ -1038,7 +1037,7 @@ Task<> compareRankings(std::string query)
         auto db = app().getDbClient();
 
         const auto fts_started = std::chrono::steady_clock::now();
-        const auto bm25_candidates = co_await retrieveBm25Candidates(query);
+        const auto bm25_candidates = co_await retrieveBm25Candidates(query, bm25_candidate_limit);
         const auto candidate_rows = co_await db->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,

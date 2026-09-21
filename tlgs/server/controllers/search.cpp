@@ -690,8 +690,6 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
          site_decay=fusion_site_decay]() -> Task<orm::Result> {
         // Keep BM25 as a top-level query. In a CTE PostgreSQL projects the
         // ORDER BY expression again, tokenizing every returned document.
-        // Keep LIMIT literal: Drogon reuses prepared statements, and a generic
-        // plan cannot push a parameterized LIMIT into pg_textsearch's top-K scan.
         const auto bm25_started = Clock::now();
         const auto bm25_rows = filter_empty
             ? co_await db->execSqlCoro(R"sql(
@@ -701,12 +699,12 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                      pages.title, pages.search_headings, pages.search_link_text,
                      pages.url, pages.content_body) <@>
                  to_bm25query($1, 'pages_bm25_search_idx')
-        LIMIT 5000
-    )sql", query_str)
+        LIMIT $2
+    )sql", query_str, fusion_bm25_candidate_limit)
             : co_await db->execSqlCoro(R"sql(
         SELECT pages.url, bm25_get_current_score() AS bm25_distance
         FROM pages
-        CROSS JOIN (SELECT $2::jsonb AS value) filters
+        CROSS JOIN (SELECT $3::jsonb AS value) filters
         WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
             NOT EXISTS (
                 SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
@@ -768,8 +766,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                      pages.title, pages.search_headings, pages.search_link_text,
                      pages.url, pages.content_body) <@>
                  to_bm25query($1, 'pages_bm25_search_idx')
-        LIMIT 5000
-    )sql", query_str, filter_json);
+        LIMIT $2
+    )sql", query_str, fusion_bm25_candidate_limit, filter_json);
         const auto bm25_finished = Clock::now();
         LOG_DEBUG << "BM25 retrieval for `" << query_str << "`: "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1183,8 +1181,8 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
                      pages.title, pages.search_headings, pages.search_link_text,
                      pages.url, pages.content_body) <@>
                  to_bm25query($1, 'pages_bm25_search_idx')
-        LIMIT 5000
-    )sql", query_str);
+        LIMIT $2
+    )sql", query_str, max_rank_candidates);
     nlohmann::json bm25_candidates = nlohmann::json::array();
     for(const auto& row : bm25_rows)
         bm25_candidates.push_back({
