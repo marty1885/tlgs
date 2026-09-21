@@ -1,8 +1,8 @@
 <%view header %>
 
-### 2029-09-?? TLGS 2.0!
+### 2029-09-22 TLGS 2.0!
 
-I ended up rewriting almost the entirty of TLGS. It should run MUCH better compared to the previous version. Had to drop SALSA in favor of cheaper graph evaulations and redesign FTS... overall it should be several times faster and no longer timeout. Also the crawler has been seperated into TARDIS, an unified Geminispace crawler that is awlways running - for both arhival and indexing. 
+I ended up rewriting the core of TLGS. It should run MUCH better compared to the previous version. Had to drop SALSA in favor of cheaper graph evaulations and move FTS to BM25... overall it should be several times faster and no longer timeout. Also the crawler has been seperated into TARDIS, an unified Geminispace crawler that is awlways running - for both arhival and indexing.
 
 => gemini://tardis.northwire.xyz/ TARDIS
 
@@ -55,7 +55,7 @@ Sorry for disappearing for a while. I've been busy upgrading the TLS capability 
 
 ### 2023-01-08 Reverting CJK support
 
-I'm reverting the CJK support for now. It's causing SQL timeouts and no clear indication why. 
+I'm reverting the CJK support for now. It's causing SQL timeouts and no clear indication why.
 
 ### 2022-11-09 Gemsub feed aggregation
 
