@@ -686,8 +686,96 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     auto db = app().getDbClient();
     const auto filter_json = serializeSearchFilter(filter).dump();
     auto fts_task = executeTimed(
-        [db, query_str, filter_json, site_decay=fusion_site_decay]() {
-        return db->execSqlCoro(R"sql(
+        [db, query_str, filter_json, filter_empty=filter.empty(),
+         site_decay=fusion_site_decay]() -> Task<orm::Result> {
+        // Keep BM25 as a top-level query. In a CTE PostgreSQL projects the
+        // ORDER BY expression again, tokenizing every returned document.
+        const auto bm25_started = Clock::now();
+        const auto bm25_rows = filter_empty
+            ? co_await db->execSqlCoro(R"sql(
+        SELECT pages.url, bm25_get_current_score() AS bm25_distance
+        FROM pages
+        ORDER BY public.tlgs_bm25_document(
+                     pages.title, pages.search_headings, pages.search_link_text,
+                     pages.url, pages.content_body) <@>
+                 to_bm25query($1, 'pages_bm25_search_idx')
+        LIMIT $2
+    )sql", query_str, fusion_bm25_candidate_limit)
+            : co_await db->execSqlCoro(R"sql(
+        SELECT pages.url, bm25_get_current_score() AS bm25_distance
+        FROM pages
+        CROSS JOIN (SELECT $3::jsonb AS value) filters
+        WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                WHERE (item->>'negate')::boolean
+                  AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+                )
+            )
+          ))
+          AND (jsonb_array_length(filters.value->'domain')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                WHERE (item->>'negate')::boolean
+                  AND lower(pages.domain_name)=lower(item->>'value')
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND lower(pages.domain_name)=lower(item->>'value')
+                )
+            )
+          ))
+          AND (
+            jsonb_array_length(filters.value->'size')=0
+            OR (pages.size > 0 AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
+                WHERE CASE WHEN (item->>'greater')::boolean
+                           THEN pages.size <= (item->>'size')::bigint
+                           ELSE pages.size >= (item->>'size')::bigint END
+            ))
+          )
+          AND (jsonb_array_length(filters.value->'title')=0 OR (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE (item->>'negate')::boolean
+                  AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE NOT (item->>'negate')::boolean
+                  AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
+            )
+          ))
+        ORDER BY public.tlgs_bm25_document(
+                     pages.title, pages.search_headings, pages.search_link_text,
+                     pages.url, pages.content_body) <@>
+                 to_bm25query($1, 'pages_bm25_search_idx')
+        LIMIT $2
+    )sql", query_str, fusion_bm25_candidate_limit, filter_json);
+        const auto bm25_finished = Clock::now();
+        nlohmann::json bm25_candidates = nlohmann::json::array();
+        for(const auto& row : bm25_rows)
+            bm25_candidates.push_back({
+                {"url", row["url"].as<std::string>()},
+                {"bm25_distance", row["bm25_distance"].as<double>()}
+            });
+        auto ranked_rows = co_await db->execSqlCoro(R"sql(
         WITH query AS (
             SELECT websearch_to_tsquery('simple', $1) AS simple,
                    phraseto_tsquery('simple', $1) AS simple_phrase
@@ -761,17 +849,9 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 )
               ))
         ), bm25_matches AS MATERIALIZED (
-            SELECT pages.url,
-                   public.tlgs_bm25_document(
-                       pages.title, pages.search_headings, pages.search_link_text,
-                       pages.url, pages.content_body) <@>
-                       to_bm25query($1, 'pages_bm25_search_idx') AS bm25_distance
-            FROM eligible pages
-            ORDER BY public.tlgs_bm25_document(
-                         pages.title, pages.search_headings, pages.search_link_text,
-                         pages.url, pages.content_body) <@>
-                     to_bm25query($1, 'pages_bm25_search_idx')
-            LIMIT $2
+            SELECT url, bm25_distance
+            FROM jsonb_to_recordset($7::jsonb)
+                 AS bm25(url text, bm25_distance double precision)
         ), title_matches AS MATERIALIZED (
             SELECT pages.url
             FROM eligible pages
@@ -841,7 +921,16 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", query_str, fusion_bm25_candidate_limit, fusion_candidate_limit,
-        site_decay, filter_json, fusion_title_candidate_limit);
+        site_decay, filter_json, fusion_title_candidate_limit,
+        bm25_candidates.dump());
+        const auto ranked_finished = Clock::now();
+        LOG_DEBUG << "Lexical stages for `" << query_str << "`: BM25 "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         bm25_finished - bm25_started).count()
+                  << "ms (" << bm25_rows.size() << " candidates), title/rerank "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         ranked_finished - bm25_finished).count() << "ms";
+        co_return ranked_rows;
     });
 
     auto hilltop_task = executeTimed(
@@ -1080,22 +1169,29 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
     auto db = app().getDbClient();
     constexpr size_t max_root_set_size = 1000;
     constexpr size_t max_rank_candidates = 5000;
+    const auto bm25_rows = co_await db->execSqlCoro(R"sql(
+        SELECT pages.url, bm25_get_current_score() AS distance
+        FROM pages
+        ORDER BY public.tlgs_bm25_document(
+                     pages.title, pages.search_headings, pages.search_link_text,
+                     pages.url, pages.content_body) <@>
+                 to_bm25query($1, 'pages_bm25_search_idx')
+        LIMIT $2
+    )sql", query_str, max_rank_candidates);
+    nlohmann::json bm25_candidates = nlohmann::json::array();
+    for(const auto& row : bm25_rows)
+        bm25_candidates.push_back({
+            {"url", row["url"].as<std::string>()},
+            {"distance", row["distance"].as<double>()}
+        });
     auto nodes_of_intrest = co_await db->execSqlCoro(R"sql(
         WITH query AS (
             SELECT websearch_to_tsquery('simple', $1) AS simple,
                    phraseto_tsquery('simple', $1) AS phrase
         ), bm25 AS MATERIALIZED (
-            SELECT pages.url,
-                   public.tlgs_bm25_document(
-                       pages.title, pages.search_headings, pages.search_link_text,
-                       pages.url, pages.content_body) <@>
-                       to_bm25query($1, 'pages_bm25_search_idx') AS distance
-            FROM pages
-            ORDER BY public.tlgs_bm25_document(
-                         pages.title, pages.search_headings, pages.search_link_text,
-                         pages.url, pages.content_body) <@>
-                     to_bm25query($1, 'pages_bm25_search_idx')
-            LIMIT $2
+            SELECT url, distance
+            FROM jsonb_to_recordset($4::jsonb)
+                 AS bm25(url text, distance double precision)
         ), titles AS MATERIALIZED (
             SELECT pages.url
             FROM pages CROSS JOIN query
@@ -1126,7 +1222,8 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
         FROM roots JOIN pages ON pages.url=roots.url
         WHERE roots.rank > 0
         ORDER BY roots.rank DESC, roots.url
-    )sql", query_str, max_rank_candidates, max_root_set_size);
+    )sql", query_str, max_rank_candidates, max_root_set_size,
+        bm25_candidates.dump());
     if(nodes_of_intrest.size() == 0) {
         LOG_DEBUG << "DB returned no root set";
         co_return {};

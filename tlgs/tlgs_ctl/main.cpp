@@ -849,10 +849,31 @@ Task<> retireLegacyFtsIndexes()
     app().quit();
 }
 
+Task<nlohmann::json> retrieveBm25Candidates(std::string query, size_t limit)
+{
+    const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
+        SELECT pages.url, bm25_get_current_score() AS distance
+        FROM pages
+        ORDER BY public.tlgs_bm25_document(
+                     pages.title, pages.search_headings, pages.search_link_text,
+                     pages.url, pages.content_body) <@>
+                 to_bm25query($1, 'pages_bm25_search_idx')
+        LIMIT $2
+    )sql", query, limit);
+    nlohmann::json candidates = nlohmann::json::array();
+    for(const auto& row : rows)
+        candidates.push_back({
+            {"url", row["url"].as<std::string>()},
+            {"distance", row["distance"].as<double>()}
+        });
+    co_return candidates;
+}
+
 Task<> queryHilltop(std::string query)
 {
     try {
         const auto started = std::chrono::steady_clock::now();
+        const auto bm25_candidates = co_await retrieveBm25Candidates(query, 5000);
         const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,
@@ -862,17 +883,9 @@ Task<> queryHilltop(std::string query)
                 FROM site_identity_state
                 WHERE singleton=TRUE
             ), bm25 AS MATERIALIZED (
-                SELECT pages.url,
-                       public.tlgs_bm25_document(
-                           pages.title, pages.search_headings, pages.search_link_text,
-                           pages.url, pages.content_body) <@>
-                           to_bm25query($1, 'pages_bm25_search_idx') AS distance
-                FROM pages
-                ORDER BY public.tlgs_bm25_document(
-                             pages.title, pages.search_headings, pages.search_link_text,
-                             pages.url, pages.content_body) <@>
-                         to_bm25query($1, 'pages_bm25_search_idx')
-                LIMIT $2
+                SELECT url, distance
+                FROM jsonb_to_recordset($4::jsonb)
+                     AS bm25(url text, distance double precision)
             ), titles AS MATERIALIZED (
                 SELECT pages.url
                 FROM pages CROSS JOIN query
@@ -931,7 +944,7 @@ Task<> queryHilltop(std::string query)
             LEFT JOIN authority USING (target_url)
             ORDER BY final_score DESC, candidates.text_rank DESC
             LIMIT 50
-        )sql", query, 5000, 1000);
+        )sql", query, 5000, 1000, bm25_candidates.dump());
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
 
@@ -1024,22 +1037,15 @@ Task<> compareRankings(std::string query)
         auto db = app().getDbClient();
 
         const auto fts_started = std::chrono::steady_clock::now();
+        const auto bm25_candidates = co_await retrieveBm25Candidates(query, bm25_candidate_limit);
         const auto candidate_rows = co_await db->execSqlCoro(R"sql(
             WITH query AS (
                 SELECT websearch_to_tsquery('simple', $1) AS simple,
                        phraseto_tsquery('simple', $1) AS phrase
             ), bm25 AS MATERIALIZED (
-                SELECT pages.url,
-                       public.tlgs_bm25_document(
-                           pages.title, pages.search_headings, pages.search_link_text,
-                           pages.url, pages.content_body) <@>
-                           to_bm25query($1, 'pages_bm25_search_idx') AS distance
-                FROM pages
-                ORDER BY public.tlgs_bm25_document(
-                             pages.title, pages.search_headings, pages.search_link_text,
-                             pages.url, pages.content_body) <@>
-                         to_bm25query($1, 'pages_bm25_search_idx')
-                LIMIT $2
+                SELECT url, distance
+                FROM jsonb_to_recordset($4::jsonb)
+                     AS bm25(url text, distance double precision)
             ), titles AS MATERIALIZED (
                 SELECT pages.url
                 FROM pages CROSS JOIN query
@@ -1064,7 +1070,8 @@ Task<> compareRankings(std::string query)
             WHERE retrieved.distance < 0 OR pages.title_vector @@ query.simple
             ORDER BY fts DESC, pages.url
             LIMIT $3
-        )sql", query, bm25_candidate_limit, candidate_limit);
+        )sql", query, bm25_candidate_limit, candidate_limit,
+            bm25_candidates.dump());
         const auto fts_finished = std::chrono::steady_clock::now();
 
         std::vector<ExperimentResult> results;
