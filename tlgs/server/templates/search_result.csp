@@ -32,6 +32,14 @@ size_t item_per_page = @@.get<size_t>("item_per_page");
 size_t total_results = @@.get<size_t>("total_results");
 size_t max_pages = total_results/item_per_page + (total_results%item_per_page ? 1 : 0);
 std::string search_query = @@.get<std::string>("search_query");
+auto url2tardis = [](const std::string& url) -> std::string
+{
+    const std::string base = "gemini://tardis.northwire.xyz/archive/gemini/x/";
+    auto view = url.substr(9 /*gemini://*/);
+    if(view.size() == 0)
+        return "gemini://tardis.northwire.xyz/";
+    return base + utils::urlEncode(view);
+};
 
 if(!verbose_mode) {
     std::string search_path = " /v/search/"+std::to_string(current_page)+"?"+encoded_search_term;
@@ -61,6 +69,7 @@ for(const auto& result : search_result) {
         $$ << "* Last Crawled: " << result.last_crawled_at << "\n";
     }
     $$ << sanitize_previw(result.preview) << "\n";
+    $$ << "=> 📦 " << url2tardis(url.str())  << " Archived page ";
     $$ << "\n";
 }
 

@@ -67,7 +67,16 @@ Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
     std::shared_ptr<nlohmann::json> feeds;
     if(cache.findAndFetch(request_feed_type, feeds) == false ) {
         auto db = app().getDbClient();
-        auto feeds_in_db = co_await db->execSqlCoro("SELECT url FROM pages WHERE feed_type = $1", request_feed_type);
+        // TARDIS can import RSS and Atom as metadata-only captures.  Keep the
+        // explicit classification for feeds that require parsing (Gemsub), but
+        // fall back to the MIME-based detection used before feed_type existed
+        // so already-imported captures remain visible.
+        auto feeds_in_db = co_await db->execSqlCoro(
+            "SELECT url FROM pages WHERE feed_type = $1 OR "
+            "($1 = 'atom' AND content_type = 'application/atom+xml') OR "
+            "($1 = 'rss' AND content_type = 'application/rss+xml') OR "
+            "($1 = 'twtxt' AND content_type = 'text/plain' AND url LIKE '%/twtxt.txt')",
+            request_feed_type);
         auto feeds_vector = tlgs::map(feeds_in_db, [](const auto& feed) { return feed["url"].template as<std::string>(); });
         feeds = std::make_shared<nlohmann::json>(std::move(feeds_vector));
         cache.insert(request_feed_type, feeds, 3600*8);
@@ -87,7 +96,8 @@ Task<HttpResponsePtr> api::v1::known_security_txt(HttpRequestPtr req)
     if(cache.findAndFetch("security_txt", security_txt) == false ) {
         auto db = app().getDbClient();
         auto known_security_txt = co_await db->execSqlCoro("SELECT url FROM pages WHERE "
-            "content_type = 'text/plain' AND url ~ '.*://[^\\/]+/.well-known/security.txt'");
+            "(content_type = 'text/plain' OR last_meta ILIKE 'text/plain%') "
+            "AND url ~ '.*://[^\\/]+/.well-known/security.txt'");
         auto security_txt_vector = tlgs::map(known_security_txt, [](const auto& security_txt) {
             return security_txt["url"].template as<std::string>();
         });

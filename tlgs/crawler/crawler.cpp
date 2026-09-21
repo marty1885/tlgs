@@ -17,6 +17,7 @@
 
 #include <tlgsutils/gemini_parser.hpp>
 #include <tlgsutils/robots_txt_parser.hpp>
+#include <tlgsutils/site_identity.hpp>
 #include <tlgsutils/url_parser.hpp>
 #include <tlgsutils/utils.hpp>
 #include <trantor/utils/Logger.h>
@@ -106,6 +107,51 @@ std::string mimeFromMeta(const std::string_view meta)
 GeminiCrawler::GeminiCrawler(EventLoop* loop) : loop_(loop) {}
 GeminiCrawler::~GeminiCrawler() = default;
 
+Task<void> GeminiCrawler::configureTardisSiteIdentity()
+{
+    const auto active = co_await app().getDbClient()->execSqlCoro(R"sql(
+        SELECT rulesets.id, rulesets.rules_toml
+        FROM site_identity_state state
+        JOIN site_identity_rulesets rulesets ON rulesets.id=state.active_ruleset_id
+        WHERE state.singleton=TRUE
+    )sql");
+    tardis_ruleset_id_.reset();
+    tardis_site_identity_rules_.reset();
+    if(active.empty()) {
+        LOG_INFO << "No active site identity ruleset; TARDIS URL mapping is disabled";
+        co_return;
+    }
+
+    const auto source = active[0]["rules_toml"].as<std::string>();
+    tardis_site_identity_rules_ = std::make_shared<const tlgs::SiteIdentityRules>(
+        tlgs::SiteIdentityRules::fromToml(toml::parse_str(source, toml::spec::v(1, 0, 0)), source));
+    tardis_ruleset_id_ = active[0]["id"].as<int64_t>();
+    LOG_INFO << "Pinned site identity ruleset " << *tardis_ruleset_id_ << " for TARDIS sync";
+}
+
+Task<void> GeminiCrawler::syncTardisSiteIdentity(const std::vector<std::string>& urls)
+{
+    if(!tardis_ruleset_id_ || urls.empty())
+        co_return;
+
+    nlohmann::json rows = nlohmann::json::array();
+    for(const auto& url : urls) {
+        const auto identity = tardis_site_identity_rules_->classify(url);
+        rows.push_back({
+            {"url", url},
+            {"site_key", identity.site_key},
+            {"matched_rule", identity.matched_rule}
+        });
+    }
+    co_await app().getDbClient()->execSqlCoro(R"sql(
+        INSERT INTO url_site_map(ruleset_id, url, site_key, matched_rule)
+        SELECT $1, row.url, row.site_key, NULLIF(row.matched_rule, '')
+        FROM jsonb_to_recordset($2::jsonb)
+          AS row(url text, site_key text, matched_rule text)
+        ON CONFLICT DO NOTHING
+    )sql", *tardis_ruleset_id_, rows.dump());
+}
+
 Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPages)
 {
     const auto endpoint = config.get("endpoint", "gemini://tardis.northwire.xyz").asString();
@@ -121,6 +167,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         config.get("mime_types", "text/gemini,text/plain,text/markdown,text/x-rst")).asString();
     const auto body_mimes = config.get("body_mime_types", change_mimes).asString();
     auto db = app().getDbClient();
+    co_await configureTardisSiteIdentity();
     co_await db->execSqlCoro("CREATE TABLE IF NOT EXISTS crawler_sync_state (source text PRIMARY KEY, last_full_sync_unix_millis bigint NOT NULL DEFAULT 0, window_since bigint, window_till bigint, resume_token text);");
     auto state = co_await db->execSqlCoro("SELECT last_full_sync_unix_millis, window_since, window_till, resume_token FROM crawler_sync_state WHERE source = 'tardis';");
     int64_t since = 0, till = trantor::Date::now().microSecondsSinceEpoch() / 1000;
@@ -139,8 +186,16 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         auto page = co_await client.updates(since, till, token);
         tardis_active_ = true;
         ended_ = false;
+        std::vector<std::string> captured_urls;
+        captured_urls.reserve(page.captures.size());
         for(auto &capture : page.captures) {
             const auto url = capture.url;
+            const tlgs::Url parsed_url(url);
+            if(!parsed_url.good() || parsed_url.str() != url) {
+                LOG_WARN << "Ignoring invalid TARDIS URL " << url;
+                continue;
+            }
+            captured_urls.push_back(parsed_url.str());
             if(capture.hasBody) {
                 {
                     std::lock_guard lock(tardis_captures_mutex_);
@@ -155,13 +210,13 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
             // non-text capture is also searchable by its path, as it was in
             // the pre-TARDIS crawler.  Do not send it through crawlPage():
             // an absent WARC body is not an empty representation.
-            const tlgs::Url parsed_url(url);
-            if(!parsed_url.good() || parsed_url.str() != url) {
-                LOG_WARN << "Ignoring invalid TARDIS URL " << url;
-                continue;
-            }
             const auto mime = mimeFromMeta(capture.meta);
             if(capture.status / 10 == 2 && !mime.starts_with("text/")) {
+                std::optional<std::string> feed_type;
+                if(mime == "application/rss+xml")
+                    feed_type = "rss";
+                else if(mime == "application/atom+xml")
+                    feed_type = "atom";
                 auto title = parsed_url.str();
                 truncateUtf8(title, 1000);
                 auto index_friendly_url = indexFriendly(parsed_url);
@@ -169,16 +224,17 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                 const auto indexed_content_hash = tlgs::xxHash64(title + '\n' + index_friendly_url);
                 const auto raw_content_hash = tlgs::xxHash64("");
                 co_await db->execSqlCoro(
-                    "INSERT INTO pages(url, domain_name, port, content_type, title, content_body, size, "
+                    "INSERT INTO pages(url, domain_name, port, content_type, feed_type, title, content_body, size, "
                     "first_seen_at, last_crawled_at, last_crawl_success_at, last_indexed_at, last_status, last_meta, "
                     "indexed_content_hash, raw_content_hash, has_explicit_title, search_headings, search_link_text, "
                     "search_schema_version, search_vector, english_search_vector, title_vector) "
-                    "VALUES ($1, $2, $3, $4, $5, '', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
-                    "CURRENT_TIMESTAMP, $6, $7, $8, $9, false, '', '', 3, "
-                    "setweight(to_tsvector('simple', $5), 'A') || setweight(to_tsvector('simple', $10), 'C'), "
-                    "setweight(to_tsvector('english', $5), 'A') || setweight(to_tsvector('english', $10), 'C'), "
-                    "to_tsvector('simple', $5)) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, '', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                    "CURRENT_TIMESTAMP, $7, $8, $9, $10, false, '', '', 3, "
+                    "setweight(to_tsvector('simple', $6), 'A') || setweight(to_tsvector('simple', $11), 'C'), "
+                    "setweight(to_tsvector('english', $6), 'A') || setweight(to_tsvector('english', $11), 'C'), "
+                    "to_tsvector('simple', $6)) "
                     "ON CONFLICT(url) DO UPDATE SET content_type = EXCLUDED.content_type, title = EXCLUDED.title, "
+                    "feed_type = EXCLUDED.feed_type, "
                     "content_body = EXCLUDED.content_body, size = EXCLUDED.size, last_crawled_at = EXCLUDED.last_crawled_at, "
                     "last_crawl_success_at = EXCLUDED.last_crawl_success_at, last_indexed_at = EXCLUDED.last_indexed_at, "
                     "last_status = EXCLUDED.last_status, last_meta = EXCLUDED.last_meta, "
@@ -187,17 +243,25 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                     "search_link_text = EXCLUDED.search_link_text, search_schema_version = EXCLUDED.search_schema_version, "
                     "search_vector = EXCLUDED.search_vector, english_search_vector = EXCLUDED.english_search_vector, "
                     "title_vector = EXCLUDED.title_vector;",
-                    parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, title, capture.status, capture.meta,
+                    parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, feed_type, title, capture.status, capture.meta,
                     indexed_content_hash, raw_content_hash, index_friendly_url);
                 continue;
             }
+            // Even when TARDIS omits a body, its metadata is sufficient for
+            // inventory endpoints such as known_security_txt.  Preserve the
+            // MIME type without replacing a previously known type on failed
+            // captures.
             co_await db->execSqlCoro(
-                "INSERT INTO pages(url, domain_name, port, first_seen_at, last_crawled_at, last_status, last_meta) "
-                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $4, $5) "
+                "INSERT INTO pages(url, domain_name, port, content_type, first_seen_at, last_crawled_at, last_status, last_meta) "
+                "VALUES ($1, $2, $3, CASE WHEN $5 / 10 = 2 THEN $4 ELSE NULL END, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5, $6) "
                 "ON CONFLICT(url) DO UPDATE SET last_crawled_at = CURRENT_TIMESTAMP, "
-                "last_status = EXCLUDED.last_status, last_meta = EXCLUDED.last_meta;",
-                parsed_url.str(), parsed_url.host(), parsed_url.port(), capture.status, capture.meta);
+                "last_status = EXCLUDED.last_status, last_meta = EXCLUDED.last_meta, "
+                "content_type = COALESCE(EXCLUDED.content_type, pages.content_type);",
+                parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, capture.status, capture.meta);
         }
+        // Sources are batched per feed page. Outgoing targets are mapped by
+        // crawlPage() immediately after their links are parsed.
+        co_await syncTardisSiteIdentity(captured_urls);
         co_await crawlAll();
         if(page.hasMore) {
             token = page.resumeToken;
@@ -211,6 +275,8 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         }
     }
     tardis_active_ = false;
+    tardis_ruleset_id_.reset();
+    tardis_site_identity_rules_.reset();
     co_return;
 }
 
@@ -873,6 +939,14 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
             auto link_url = normalizeLink(link);
             if(link_url)
                 link_urls.insert(std::move(*link_url));
+        }
+
+        if(tardis_active_) {
+            std::vector<std::string> target_urls;
+            target_urls.reserve(link_urls.size());
+            for(const auto& link_url : link_urls)
+                target_urls.push_back(link_url.str());
+            co_await syncTardisSiteIdentity(target_urls);
         }
 
         // TODO: Use C++20 ranges. My basic implementation is not as efficent as it could be.

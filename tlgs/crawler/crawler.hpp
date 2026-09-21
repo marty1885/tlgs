@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,6 +11,7 @@
 #include <tbb/concurrent_queue.h>
 #include <trantor/net/EventLoop.h>
 #include <drogon/utils/coroutine.h>
+#include <tlgsutils/site_identity.hpp>
 
 struct TardisCapture;
 
@@ -129,6 +131,8 @@ protected:
      * @param url_str the URL to crawl
      */
     Task<bool> crawlPage(const std::string& url_str, bool retry_after_timeout = false);
+    Task<void> configureTardisSiteIdentity();
+    Task<void> syncTardisSiteIdentity(const std::vector<std::string>& urls);
 
     EventLoop* loop_;
     tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
@@ -143,4 +147,8 @@ protected:
     std::mutex tardis_captures_mutex_;
     std::unordered_map<std::string, TardisCapture> tardis_captures_;
     std::atomic<bool> tardis_active_ = false;
+    // A TARDIS window uses one immutable ruleset, even if an administrator
+    // activates a replacement while the window is being processed.
+    std::optional<int64_t> tardis_ruleset_id_;
+    std::shared_ptr<const tlgs::SiteIdentityRules> tardis_site_identity_rules_;
 };

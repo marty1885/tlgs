@@ -73,7 +73,7 @@ Rules can be checked and applied to an already-ingested database without a recra
 ./tlgs/tlgs_ctl/tlgs_ctl ../tlgs/config.json site-rules sync
 ```
 
-`apply` builds a versioned URL mapping and switches the active ruleset only after the complete mapping has been verified. `sync` adds URLs discovered by later incremental crawls to the active mapping without creating a new ruleset version.
+`apply` builds a versioned URL mapping and switches the active ruleset only after the complete mapping has been verified. During TARDIS ingestion, the crawler incrementally adds captured URLs and their parsed link targets to the ruleset that was active when the sync began. `sync` remains available to backfill URLs from a previous crawl or repair an incomplete mapping, without creating a new ruleset version.
 
 A previous mapping can be reactivated atomically:
 

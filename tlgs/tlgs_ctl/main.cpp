@@ -59,6 +59,7 @@ Task<> createDb()
 	)");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS last_crawled_index ON public.pages USING btree (last_crawled_at DESC);");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS english_search_vector tsvector;");
+	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS feed_type text;");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS has_explicit_title boolean NOT NULL DEFAULT false;");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_headings text NOT NULL DEFAULT '';");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_link_text text NOT NULL DEFAULT '';");
