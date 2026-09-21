@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -136,6 +137,10 @@ protected:
     std::atomic<size_t> ongoing_crawlings_ = 0;
     std::atomic<bool> ended_ = false;
     bool force_reindex_ = false;
+    // DB callbacks resume crawler coroutines on multiple IO threads.  Keep
+    // capture lookup/copy and removal serialized; std::unordered_map is not
+    // safe even for concurrent erases of separate keys.
+    std::mutex tardis_captures_mutex_;
     std::unordered_map<std::string, TardisCapture> tardis_captures_;
-    bool tardis_active_ = false;
+    std::atomic<bool> tardis_active_ = false;
 };

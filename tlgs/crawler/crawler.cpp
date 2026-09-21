@@ -142,7 +142,10 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         for(auto &capture : page.captures) {
             const auto url = capture.url;
             if(capture.hasBody) {
-                tardis_captures_.emplace(url, std::move(capture));
+                {
+                    std::lock_guard lock(tardis_captures_mutex_);
+                    tardis_captures_.emplace(url, std::move(capture));
+                }
                 craw_queue_.push(url);
                 continue;
             }
@@ -554,8 +557,10 @@ void GeminiCrawler::dispatchCrawl()
                 bool success = co_await crawlPage(url_str.value(), retry_count != 0);
                 if(success)
                     LOG_INFO << "Processed " << url_str.value();
-                if(tardis_active_)
+                if(tardis_active_) {
+                    std::lock_guard lock(tardis_captures_mutex_);
                     tardis_captures_.erase(url_str.value());
+                }
                 break;
             }
             catch(std::exception& e) {
@@ -569,6 +574,7 @@ void GeminiCrawler::dispatchCrawl()
                 else {
                     LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
                     if(tardis_active_) {
+                        std::lock_guard lock(tardis_captures_mutex_);
                         tardis_captures_.erase(url_str.value());
                         break;
                     }
@@ -640,14 +646,20 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
         int status;
         tlgs::Url crawl_url = url;
         if(tardis_active_) {
-            const auto capture = tardis_captures_.find(url.str());
-            if(capture == tardis_captures_.end()) throw std::runtime_error("missing TARDIS capture");
+            TardisCapture capture;
+            {
+                std::lock_guard lock(tardis_captures_mutex_);
+                const auto captureIt = tardis_captures_.find(url.str());
+                if(captureIt == tardis_captures_.end())
+                    throw std::runtime_error("missing TARDIS capture");
+                capture = captureIt->second;
+            }
             resp = HttpResponse::newHttpResponse();
-            resp->setBody(capture->second.body);
-            resp->addHeader("gemini-status", std::to_string(capture->second.status));
-            resp->addHeader("meta", capture->second.meta);
-            resp->setContentTypeString(capture->second.meta);
-            status = capture->second.status;
+            resp->setBody(capture.body);
+            resp->addHeader("gemini-status", std::to_string(capture.status));
+            resp->addHeader("meta", capture.meta);
+            resp->setContentTypeString(capture.meta);
+            status = capture.status;
         }
         else do {
             auto redirect = co_await db->execSqlCoro("SELECT to_url FROM perma_redirects WHERE from_url = $1;", crawl_url.str());

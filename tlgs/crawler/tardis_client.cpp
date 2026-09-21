@@ -12,6 +12,8 @@ using namespace drogon;
 
 namespace
 {
+constexpr size_t maximumBatchDecompressedBytes = 256U * 1024U * 1024U;
+
 std::string encodePathSegment(std::string_view input)
 {
     static constexpr char hex[] = "0123456789ABCDEF";
@@ -39,13 +41,18 @@ std::string decompressZstd(std::string_view compressed)
     ZSTD_inBuffer in{compressed.data(), compressed.size(), 0};
     std::string output;
     std::vector<char> buffer(ZSTD_DStreamOutSize());
+    size_t result = 1;
     while(in.pos < in.size) {
         ZSTD_outBuffer out{buffer.data(), buffer.size(), 0};
-        const auto result = ZSTD_decompressStream(stream, &out, &in);
+        result = ZSTD_decompressStream(stream, &out, &in);
         if(ZSTD_isError(result))
             throw std::runtime_error(std::string("invalid zstd batch from TARDIS: ") + ZSTD_getErrorName(result));
+        if(out.pos > maximumBatchDecompressedBytes - output.size())
+            throw std::runtime_error("TARDIS batch exceeds 256 MiB decompressed limit");
         output.append(buffer.data(), out.pos);
     }
+    if(result != 0)
+        throw std::runtime_error("truncated zstd batch from TARDIS");
     return output;
 }
 
@@ -72,7 +79,7 @@ std::unordered_map<std::string, std::string> parseWarcResources(std::string_view
             line = end + 2;
         }
         const size_t body = headerEnd + 4;
-        if(body + contentLength > warc.size())
+        if(contentLength > warc.size() - body)
             throw std::runtime_error("truncated WARC payload from TARDIS");
         if(!target.empty())
             bodies.emplace(std::move(target), std::string(warc.substr(body, contentLength)));
