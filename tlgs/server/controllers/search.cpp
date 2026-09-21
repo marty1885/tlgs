@@ -700,25 +700,14 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 FROM site_identity_state
                 WHERE singleton=TRUE
             ) AS ruleset_id
-        ), lexical_scored AS (
+        ), lexical_matches AS MATERIALIZED (
+            // Bound a broad query before the per-document rank calculation.
+            // ts_rank_cd cannot use the GIN index for ordered retrieval, so a
+            // limit after its ORDER BY still ranks every matching document.
             SELECT pages.url, pages.content_type, pages.size,
-                   pages.indexed_content_hash AS content_hash,
-                   concat('gemini://', lower(pages.domain_name),
-                          CASE WHEN pages.port = 1965 THEN ''
-                               ELSE ':' || pages.port::text END) AS physical_site,
-                   (CASE WHEN pages.search_vector @@ query.simple THEN
-                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.search_vector, query.simple, 1), 0.5)
-                    ELSE 0.8 * (
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
-                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
-                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
-                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
-                                        pages.english_search_vector, query.english, 1), 0.5)
-                    ) END)::double precision AS fts_score
+                   pages.indexed_content_hash, pages.domain_name, pages.port,
+                   pages.search_vector, pages.english_search_vector,
+                   pages.title_vector
             FROM pages
             CROSS JOIN query
             CROSS JOIN filters
@@ -782,6 +771,28 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                       AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
                 )
               ))
+            LIMIT $2
+        ), lexical_scored AS (
+            SELECT pages.url, pages.content_type, pages.size,
+                   pages.indexed_content_hash AS content_hash,
+                   concat('gemini://', lower(pages.domain_name),
+                          CASE WHEN pages.port = 1965 THEN ''
+                               ELSE ':' || pages.port::text END) AS physical_site,
+                   (CASE WHEN pages.search_vector @@ query.simple THEN
+                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                        pages.search_vector, query.simple, 1), 0.5)
+                    ELSE 0.8 * (
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                        pages.english_search_vector, query.english, 1), 0.5)
+                    ) END)::double precision AS fts_score
+            FROM lexical_matches pages
+            CROSS JOIN query
         ), lexical_pool AS MATERIALIZED (
             SELECT * FROM lexical_scored
             ORDER BY fts_score DESC
