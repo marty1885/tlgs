@@ -1,5 +1,6 @@
 add_executable(tlgs_server
   main.cpp
+  known_security_txt.cpp
   controllers/search.cpp
   controllers/tools.cpp
   controllers/api.cpp)

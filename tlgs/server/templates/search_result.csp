@@ -69,7 +69,7 @@ for(const auto& result : search_result) {
         $$ << "* Last Crawled: " << result.last_crawled_at << "\n";
     }
     $$ << sanitize_previw(result.preview) << "\n";
-    $$ << "=> 📦 " << url2tardis(url.str())  << " Archived page ";
+    $$ << "=> " << url2tardis(url.str())  << " 📦 Archived page\n";
     $$ << "\n";
 }
 

@@ -2,7 +2,7 @@
 
 To assist with (potential) data sharing between servers. TLGS provides a set of APIs that returns some useful internal information in a format that is easy for computers to understand; mostly JSON. Note that these APIs are intentionally slowed down to prevent abuse. The purpose of the APIs should be self explanatory.
 
-The API avaliable are geared towards sharing important information from TLGS' index that other servers may need. While crawling the entire geminispace being too expensive for them. 
+The API avaliable are geared towards sharing important information from TLGS' index that other servers may need. While crawling the entire geminispace being too expensive for them.
 
 ## Known resources
 
@@ -16,6 +16,6 @@ Sends back a list of known feeds. By default this API returns all Atom feeds as 
 
 Supported formats: atom, rss, twtxt, gemsub
 
-=> /api/v1/known_secutity_txt
+=> /api/v1/known_security_txt
 
- [WIP] Sends back a list of known security.txt (RFC9116) files. These file include contact information for the host in case of a security issue. The list provided are files accessible by the TLGS crawler. i.e. Not blocked by robots.txt not not in a capsule that TLGS blacklists.
+ Sends back a list of known security.txt (RFC9116) files. These file include contact information for the host in case of a security issue. The list provided are files accessible by the TLGS crawler. i.e. Not blocked by robots.txt not not in a capsule that TLGS blacklists.

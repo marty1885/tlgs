@@ -3,6 +3,7 @@
 #include <drogon/HttpAppFramework.h>
 #include <dremini/GeminiClient.hpp>
 #include <tlgsutils/url_parser.hpp>
+#include "known_security_txt.hpp"
 #include "search_result.hpp"
 
 using namespace drogon;
@@ -12,11 +13,13 @@ struct ToolsController : public HttpController<ToolsController>
 public:
 	Task<HttpResponsePtr> statistics(HttpRequestPtr req);
 	Task<HttpResponsePtr> known_hosts(HttpRequestPtr req);
+	Task<HttpResponsePtr> known_security_txt(HttpRequestPtr req);
 	Task<HttpResponsePtr> add_seed(HttpRequestPtr req);
 
 	METHOD_LIST_BEGIN
     ADD_METHOD_TO(ToolsController::statistics, "/statistics", {Get});
     ADD_METHOD_TO(ToolsController::known_hosts, "/known-hosts", {Get});
+    ADD_METHOD_TO(ToolsController::known_security_txt, "/known_security_txt", {Get});
 	ADD_METHOD_TO(ToolsController::add_seed, "/add_seed", {Get});
     METHOD_LIST_END
 };
@@ -84,6 +87,17 @@ Task<HttpResponsePtr> ToolsController::known_hosts(HttpRequestPtr req)
     data["title"] = std::string("Hosts known to TLGS");
     data["hosts"] = std::move(hosts);
     auto resp = HttpResponse::newHttpViewResponse("known_hosts", data);
+    resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
+    co_return resp;
+}
+
+Task<HttpResponsePtr> ToolsController::known_security_txt(HttpRequestPtr req)
+{
+    auto security_txt = co_await knownSecurityTxt();
+    HttpViewData data;
+    data["title"] = std::string("Known security.txt files");
+    data["security_txt"] = std::move(security_txt);
+    auto resp = HttpResponse::newHttpViewResponse("known_security_txt", data);
     resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
     co_return resp;
 }

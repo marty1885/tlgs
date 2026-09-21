@@ -5,6 +5,7 @@
 #include <tlgsutils/url_parser.hpp>
 #include <tlgsutils/utils.hpp>
 #include <nlohmann/json.hpp>
+#include "known_security_txt.hpp"
 #include "search_result.hpp"
 
 using namespace drogon;
@@ -92,22 +93,10 @@ Task<HttpResponsePtr> api::v1::known_feeds(HttpRequestPtr req)
 
 Task<HttpResponsePtr> api::v1::known_security_txt(HttpRequestPtr req)
 {
-    std::shared_ptr<nlohmann::json> security_txt;
-    if(cache.findAndFetch("security_txt", security_txt) == false ) {
-        auto db = app().getDbClient();
-        auto known_security_txt = co_await db->execSqlCoro("SELECT url FROM pages WHERE "
-            "(content_type = 'text/plain' OR last_meta ILIKE 'text/plain%') "
-            "AND url ~ '.*://[^\\/]+/.well-known/security.txt'");
-        auto security_txt_vector = tlgs::map(known_security_txt, [](const auto& security_txt) {
-            return security_txt["url"].template as<std::string>();
-        });
-        security_txt_vector.reserve(known_security_txt.size());
-        security_txt = std::make_shared<nlohmann::json>(security_txt_vector);
-        cache.insert("security_txt", security_txt, 3600*8);
-    }
+    auto security_txt = co_await knownSecurityTxt();
     co_await sleepCoro(app().getLoop(), 0.75);
     auto resp = HttpResponse::newHttpResponse();
-    resp->setBody(security_txt->dump());
+    resp->setBody(nlohmann::json(*security_txt).dump());
     resp->setContentTypeCode(CT_APPLICATION_JSON);
     co_return resp;
 }
