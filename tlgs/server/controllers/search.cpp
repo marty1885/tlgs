@@ -182,7 +182,7 @@ std::optional<size_t> parseSizeUnits(std::string unit)
     if(unit.size() > 1 && unit.back() == 'b')
         unit.pop_back();
 
-    if(unit == "" || unit == "b" || unit == "byte") 
+    if(unit == "" || unit == "b" || unit == "byte")
         return 1;
     else if(unit == "k")
         return 1000;
@@ -272,7 +272,7 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
 
     if(!search_query.empty())
         search_query.resize(search_query.size()-1);
-    
+
     // A positive intitle term also supplies the lexical query for searches such
     // as "intitle:gemini". Negated title filters must not require the excluded
     // term to occur in the document.
@@ -309,8 +309,8 @@ nlohmann::json serializeSearchFilter(const SearchFilter& filter)
 
 /**
  * @brief Rnaks the network nodes using the HITS algorithm.
- * 
- * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i 
+ *
+ * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i
  * @param out_neighbous ector of vector where out_neighbous[i] is all outbound links of node i
  * @return std::vector<double> The score of each node
  */
@@ -335,7 +335,7 @@ std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbou
         for(size_t i=0;i<node_count;i++) {
             new_auth_score[i] = auth_score[i];
             new_hub_score[i] = hub_score[i];
-            float calc_auth_score = 0; 
+            float calc_auth_score = 0;
             float calc_hub_score = 0;
             for(auto neighbour_idx : in_neighbous[i])
                 calc_auth_score += hub_score[neighbour_idx];
@@ -371,8 +371,8 @@ std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbou
 
 /**
  * @brief Rnaks the network nodes using the SALSA algorithm.
- * 
- * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i 
+ *
+ * @param in_neighbous vector of vector where in_neighbous[i] is all inbound links of node i
  * @param out_neighbous ector of vector where out_neighbous[i] is all outbound links of node i
  * @return std::vector<double> The score of each node
  * @note in_neighbous and out_neighbous will be modified to become a biparte graph
@@ -941,8 +941,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     )sql", query_str, fusion_graph_candidate_limit, filter_json, filter_empty);
     });
 
-    auto [fts_query, hilltop_query] = co_await when_all(
-        std::move(fts_task), std::move(hilltop_task));
+    auto fts_query = co_await std::move(fts_task);
+    auto hilltop_query = co_await std::move(hilltop_task);
     const auto queries_finished = Clock::now();
     const auto& rows = *fts_query.rows;
     const auto& authority_rows = *hilltop_query.rows;
@@ -1040,7 +1040,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
               << fts_query.duration.count() << "ms (" << rows.size()
               << " candidates), Hilltop " << hilltop_query.duration.count()
               << "ms (" << authority_rows.size() << " authority targets, "
-              << graph_only_candidates << " graph-only), parallel queries "
+              << graph_only_candidates << " graph-only) "
               << milliseconds(search_started, queries_finished) << "ms, fusion "
               << milliseconds(queries_finished, fusion_finished) << "ms";
 
@@ -1333,7 +1333,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     data["total_results"] = filtered_result->size();
     data["current_page_idx"] = current_page_idx;
     data["item_per_page"] = search_results_per_page;
-    data["search_query"] = input; 
+    data["search_query"] = input;
 
     auto resp = HttpResponse::newHttpViewResponse("search_result", data);
     resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
@@ -1389,7 +1389,7 @@ Task<HttpResponsePtr> SearchController::backlinks(HttpRequestPtr req)
     auto db = app().getDbClient();
     auto backlinks = co_await db->execSqlCoro("SELECT url, is_cross_site FROM links WHERE links.to_url = $1 "
         , url.str());
-    std::vector<std::string> internal_backlinks; 
+    std::vector<std::string> internal_backlinks;
     std::vector<std::string> external_backlinks;
     for(const auto& link : backlinks) {
         std::string url = link["url"].as<std::string>();

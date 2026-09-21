@@ -69,7 +69,7 @@
 			"port": 5432,
 			"dbname": "tlgs",
 			"number_of_connections": 4,
-			"timeout": 10
+			"timeout": 30
 		}
 	 ],
 	 "custom_config": {

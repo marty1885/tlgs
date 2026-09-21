@@ -38,7 +38,7 @@ auto url2tardis = [](const std::string& url) -> std::string
     auto view = url.substr(9 /*gemini://*/);
     if(view.size() == 0)
         return "gemini://tardis.northwire.xyz/";
-    return base + utils::urlEncode(view);
+    return base + utils::urlEncodeComponent(view);
 };
 
 if(!verbose_mode) {
