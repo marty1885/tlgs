@@ -66,6 +66,25 @@ Task<> createDb()
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_schema_version smallint NOT NULL DEFAULT 0;");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS search_vector_index ON public.pages USING gin (search_vector);");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS english_search_vector_index ON public.pages USING gin (english_search_vector);");
+	co_await db->execSqlCoro("CREATE EXTENSION IF NOT EXISTS pg_textsearch;");
+	co_await db->execSqlCoro(R"sql(
+		CREATE OR REPLACE FUNCTION public.tlgs_bm25_document(
+			title_text text, headings_text text, link_text text, url_text text, body_text text
+		) RETURNS text
+		LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+			SELECT repeat(coalesce(title_text, '') || E'\n', 4) ||
+			       repeat(coalesce(headings_text, '') || E'\n', 2) ||
+			       coalesce(url_text, '') || E'\n' ||
+			       coalesce(link_text, '') || E'\n' ||
+			       coalesce(body_text, '');
+		$$
+	)sql");
+	co_await db->execSqlCoro(R"sql(
+		CREATE INDEX IF NOT EXISTS pages_bm25_search_idx ON public.pages
+		USING bm25 (public.tlgs_bm25_document(
+			title, search_headings, search_link_text, url, content_body
+		)) WITH (text_config='simple');
+	)sql");
 	co_await db->execSqlCoro(R"sql(
 		CREATE OR REPLACE FUNCTION public.tlgs_bounded_search_vector(
 			config regconfig,
