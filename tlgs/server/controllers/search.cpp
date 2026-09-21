@@ -21,6 +21,7 @@ using namespace drogon;
 namespace
 {
 constexpr size_t search_results_per_page = 10;
+constexpr size_t fusion_rough_candidate_limit = 10000;
 constexpr size_t fusion_candidate_limit = 1000;
 constexpr size_t fusion_raw_candidate_limit = 5000;
 constexpr size_t fusion_graph_candidate_limit = 250;
@@ -700,10 +701,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 FROM site_identity_state
                 WHERE singleton=TRUE
             ) AS ruleset_id
-        ), lexical_matches AS MATERIALIZED (
-            -- Bound a broad query before the per-document rank calculation.
-            -- ts_rank_cd cannot use the GIN index for ordered retrieval, so a
-            -- limit after its ORDER BY still ranks every matching document.
+        ), lexical_matches AS NOT MATERIALIZED (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash, pages.domain_name, pages.port,
                    pages.search_vector, pages.english_search_vector,
@@ -771,7 +769,27 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                       AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
                 )
               ))
-            LIMIT $2
+        ), lexical_rough AS MATERIALIZED (
+            -- Use ts_rank to select a relevance-preserving pool before the
+            -- substantially more expensive coverage-density score below.
+            SELECT pages.*,
+                   (CASE WHEN pages.search_vector @@ query.simple THEN
+                       CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.search_vector @@ query.simple_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                     pages.search_vector, query.simple, 1), 0.5)
+                    ELSE 0.8 * (
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english THEN 1.0 ELSE 0.0 END +
+                       CASE WHEN ts_filter(pages.english_search_vector, '{A}') @@ query.english_phrase THEN 0.5 ELSE 0.0 END +
+                       CASE WHEN pages.english_search_vector @@ query.english_phrase THEN 0.25 ELSE 0.0 END +
+                       least(ts_rank(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
+                                     pages.english_search_vector, query.english, 1), 0.5)
+                    ) END)::double precision AS rough_score
+            FROM lexical_matches pages
+            CROSS JOIN query
+            ORDER BY rough_score DESC, pages.url
+            LIMIT $6
         ), lexical_scored AS (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash AS content_hash,
@@ -791,7 +809,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                        least(ts_rank_cd(ARRAY[0.05, 0.15, 0.4, 0.0]::real[],
                                         pages.english_search_vector, query.english, 1), 0.5)
                     ) END)::double precision AS fts_score
-            FROM lexical_matches pages
+            FROM lexical_rough pages
             CROSS JOIN query
         ), lexical_pool AS MATERIALIZED (
             SELECT * FROM lexical_scored
@@ -831,7 +849,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", query_str, fusion_raw_candidate_limit, fusion_candidate_limit,
-        site_decay, filter_json);
+        site_decay, filter_json, fusion_rough_candidate_limit);
     });
 
     auto hilltop_task = executeTimed(
