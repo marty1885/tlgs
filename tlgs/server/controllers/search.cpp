@@ -701,9 +701,9 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 WHERE singleton=TRUE
             ) AS ruleset_id
         ), lexical_matches AS MATERIALIZED (
-            // Bound a broad query before the per-document rank calculation.
-            // ts_rank_cd cannot use the GIN index for ordered retrieval, so a
-            // limit after its ORDER BY still ranks every matching document.
+            -- Bound a broad query before the per-document rank calculation.
+            -- ts_rank_cd cannot use the GIN index for ordered retrieval, so a
+            -- limit after its ORDER BY still ranks every matching document.
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash, pages.domain_name, pages.port,
                    pages.search_vector, pages.english_search_vector,
