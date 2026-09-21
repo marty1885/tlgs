@@ -877,8 +877,6 @@ Task<> queryHilltop(std::string query)
                 SELECT pages.url
                 FROM pages CROSS JOIN query
                 WHERE pages.title_vector @@ query.simple
-                ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
-                         pages.url
                 LIMIT $3
             ), retrieved AS MATERIALIZED (
                 SELECT url, min(distance) AS distance
@@ -893,7 +891,6 @@ Task<> queryHilltop(std::string query)
                        pages.title,
                        (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
                         CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
-                        least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
                         CASE WHEN retrieved.distance < 0 THEN
                             0.5 * (-retrieved.distance) / (1.0 - retrieved.distance)
                         ELSE 0.0 END)::double precision AS text_rank
@@ -1047,8 +1044,6 @@ Task<> compareRankings(std::string query)
                 SELECT pages.url
                 FROM pages CROSS JOIN query
                 WHERE pages.title_vector @@ query.simple
-                ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
-                         pages.url
                 LIMIT $3
             ), retrieved AS MATERIALIZED (
                 SELECT url, min(distance) AS distance
@@ -1062,7 +1057,6 @@ Task<> compareRankings(std::string query)
             SELECT pages.url, pages.title,
                    (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
                     CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
-                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
                     CASE WHEN retrieved.distance < 0 THEN
                         0.5 * (-retrieved.distance) / (1.0 - retrieved.distance)
                     ELSE 0.0 END)::double precision AS fts

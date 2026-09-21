@@ -777,8 +777,6 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
             FROM eligible pages
             CROSS JOIN query
             WHERE pages.title_vector @@ query.simple
-            ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
-                     pages.url
             LIMIT $6
         ), retrieved AS MATERIALIZED (
             SELECT matches.url, min(matches.bm25_distance) AS bm25_distance
@@ -796,7 +794,6 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                                ELSE ':' || pages.port::text END) AS physical_site,
                    (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
                     CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
                     CASE WHEN retrieved.bm25_distance < 0 THEN
                         0.5 * (-retrieved.bm25_distance) /
                         (1.0 - retrieved.bm25_distance)
@@ -1103,8 +1100,6 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
             SELECT pages.url
             FROM pages CROSS JOIN query
             WHERE pages.title_vector @@ query.simple
-            ORDER BY ts_rank_cd(pages.title_vector, query.simple, 1) DESC,
-                     pages.url
             LIMIT $3
         ), candidates AS MATERIALIZED (
             SELECT url, min(distance) AS distance
@@ -1118,7 +1113,6 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
             SELECT pages.url,
                    (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
                     CASE WHEN pages.title_vector @@ query.phrase THEN 0.5 ELSE 0.0 END +
-                    least(coalesce(ts_rank_cd(pages.title_vector, query.simple, 1), 0.0), 0.25) +
                     CASE WHEN candidates.distance < 0 THEN
                         0.5 * (-candidates.distance) / (1.0 - candidates.distance)
                     ELSE 0.0 END) AS rank
