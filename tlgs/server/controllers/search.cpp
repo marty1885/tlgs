@@ -769,6 +769,11 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         LIMIT $2
     )sql", query_str, fusion_bm25_candidate_limit, filter_json);
         const auto bm25_finished = Clock::now();
+        LOG_DEBUG << "BM25 retrieval for `" << query_str << "`: "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         bm25_finished - bm25_started).count()
+                  << "ms (" << bm25_rows.size() << " candidates, filters "
+                  << (filter_empty ? "empty" : "active") << ')';
         nlohmann::json bm25_candidates = nlohmann::json::array();
         for(const auto& row : bm25_rows)
             bm25_candidates.push_back({
