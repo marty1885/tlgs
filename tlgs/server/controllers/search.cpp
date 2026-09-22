@@ -1469,13 +1469,16 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
             }
 
             const auto& page = page_data[it->second];
+            const auto last_crawled_at = page["last_crawl_success_at"].isNull()
+                ? "Never"
+                : trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
+                    .toCustomFormattedString("%Y-%m-%d %H:%M:%S", false);
             SearchResult res {
                 .url = item.url,
                 .title = page["title"].as<std::string>(),
                 .content_type = page["content_type"].as<std::string>(),
                 .preview = page["preview"].as<std::string>(),
-                .last_crawled_at = trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
-                    .toCustomFormattedString("%Y-%m-%d %H:%M:%S", false),
+                .last_crawled_at = last_crawled_at,
                 .size = page["size"].as<uint64_t>(),
                 .score = item.score
             };
