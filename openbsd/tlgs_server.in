@@ -1,6 +1,7 @@
 #!/bin/ksh
 
-daemon="@CMAKE_INSTALL_FULL_BINDIR@/tlgs_server /etc/tlgs/server_config.json"
+daemon="@CMAKE_INSTALL_FULL_BINDIR@/tlgs_server"
+daemon_flags="/etc/tlgs/server_config.json"
 daemon_user="_tlgs"
 daemon_execdir="/var/tlgs"
 daemon_logger="daemon.info"

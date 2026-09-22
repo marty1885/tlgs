@@ -227,12 +227,9 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                     "INSERT INTO pages(url, domain_name, port, content_type, feed_type, title, content_body, size, "
                     "first_seen_at, last_crawled_at, last_crawl_success_at, last_indexed_at, last_status, last_meta, "
                     "indexed_content_hash, raw_content_hash, has_explicit_title, search_headings, search_link_text, "
-                    "search_schema_version, search_vector, english_search_vector, title_vector) "
+                    "search_schema_version, title_vector) "
                     "VALUES ($1, $2, $3, $4, $5, $6, '', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
-                    "CURRENT_TIMESTAMP, $7, $8, $9, $10, false, '', '', 3, "
-                    "setweight(to_tsvector('simple', $6), 'A') || setweight(to_tsvector('simple', $11), 'C'), "
-                    "setweight(to_tsvector('english', $6), 'A') || setweight(to_tsvector('english', $11), 'C'), "
-                    "to_tsvector('simple', $6)) "
+                    "CURRENT_TIMESTAMP, $7, $8, $9, $10, false, '', '', 3, to_tsvector('simple', $6)) "
                     "ON CONFLICT(url) DO UPDATE SET content_type = EXCLUDED.content_type, title = EXCLUDED.title, "
                     "feed_type = EXCLUDED.feed_type, "
                     "content_body = EXCLUDED.content_body, size = EXCLUDED.size, last_crawled_at = EXCLUDED.last_crawled_at, "
@@ -241,7 +238,6 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                     "indexed_content_hash = EXCLUDED.indexed_content_hash, raw_content_hash = EXCLUDED.raw_content_hash, "
                     "has_explicit_title = EXCLUDED.has_explicit_title, search_headings = EXCLUDED.search_headings, "
                     "search_link_text = EXCLUDED.search_link_text, search_schema_version = EXCLUDED.search_schema_version, "
-                    "search_vector = EXCLUDED.search_vector, english_search_vector = EXCLUDED.english_search_vector, "
                     "title_vector = EXCLUDED.title_vector;",
                     parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, feed_type, title, capture.status, capture.meta,
                     indexed_content_hash, raw_content_hash, index_friendly_url);
@@ -979,9 +975,6 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
             "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14, "
             "has_explicit_title = $16, search_headings = $17, search_link_text = $18, "
-            "search_vector = tlgs_bounded_search_vector('simple', $19, $20, $15, $21, $22, $23, $24, $25, $26, $27, $28), "
-            "english_search_vector = CASE WHEN $5::text IS NULL OR lower(split_part($5::text, ',', 1)) ~ '^en([_-]|$)' THEN "
-                "tlgs_bounded_search_vector('english', $19, $20, $15, $21, $22, $23, $24, $25, $26, $27, $28) ELSE NULL END, "
             "title_vector = to_tsvector('simple', $19), "
             "search_schema_version = 3, last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()

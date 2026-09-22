@@ -42,11 +42,9 @@ Task<> createDb()
 			last_status integer,
 			last_meta text,
 			first_seen_at timestamp without time zone NOT NULL,
-			search_vector tsvector,
 			cross_site_links json,
 			internal_links json,
 			title_vector tsvector,
-			english_search_vector tsvector,
 			has_explicit_title boolean NOT NULL DEFAULT false,
 			search_headings text NOT NULL DEFAULT '',
 			search_link_text text NOT NULL DEFAULT '',
@@ -58,7 +56,6 @@ Task<> createDb()
 		);
 	)");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS last_crawled_index ON public.pages USING btree (last_crawled_at DESC);");
-	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS english_search_vector tsvector;");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS feed_type text;");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS has_explicit_title boolean NOT NULL DEFAULT false;");
 	co_await db->execSqlCoro("ALTER TABLE public.pages ADD COLUMN IF NOT EXISTS search_headings text NOT NULL DEFAULT '';");
@@ -83,83 +80,6 @@ Task<> createDb()
 		USING bm25 (public.tlgs_bm25_document(
 			title, search_headings, search_link_text, url, content_body
 		)) WITH (text_config='simple');
-	)sql");
-	co_await db->execSqlCoro(R"sql(
-		CREATE OR REPLACE FUNCTION public.tlgs_bounded_search_vector(
-			config regconfig,
-			title_text text,
-			headings_text text,
-			url_text text,
-			link_text text,
-			body_text text,
-			reduced_headings text,
-			reduced_link_text text,
-			reduced_body text,
-			minimal_headings text,
-			minimal_link_text text,
-			minimal_body text
-		) RETURNS tsvector
-		LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
-		DECLARE
-			result tsvector;
-		BEGIN
-			result :=
-				setweight(to_tsvector(config, coalesce(title_text, '')), 'A') ||
-				setweight(to_tsvector(config, coalesce(headings_text, '')), 'B') ||
-				setweight(to_tsvector(config, coalesce(url_text, '') || ' ' || coalesce(link_text, '')), 'C') ||
-				setweight(to_tsvector(config, coalesce(body_text, '')), 'D');
-			IF pg_column_size(result) <= 49152 THEN
-				RETURN result;
-			END IF;
-
-			result :=
-				setweight(to_tsvector(config, coalesce(title_text, '')), 'A') ||
-				setweight(to_tsvector(config, coalesce(reduced_headings, '')), 'B') ||
-				setweight(to_tsvector(config, coalesce(url_text, '') || ' ' || coalesce(reduced_link_text, '')), 'C') ||
-				setweight(to_tsvector(config, coalesce(reduced_body, '')), 'D');
-			IF pg_column_size(result) <= 49152 THEN
-				RETURN result;
-			END IF;
-
-			result :=
-				setweight(to_tsvector(config, coalesce(title_text, '')), 'A') ||
-				setweight(to_tsvector(config, coalesce(minimal_headings, '')), 'B') ||
-				setweight(to_tsvector(config, coalesce(url_text, '') || ' ' || coalesce(minimal_link_text, '')), 'C') ||
-				setweight(to_tsvector(config, coalesce(minimal_body, '')), 'D');
-			IF pg_column_size(result) <= 49152 THEN
-				RETURN result;
-			END IF;
-
-			-- The title and normalized URL are independently bounded by the crawler.
-			RETURN
-				setweight(to_tsvector(config, coalesce(title_text, '')), 'A') ||
-				setweight(to_tsvector(config, coalesce(url_text, '')), 'C');
-		END;
-		$$
-	)sql");
-	co_await db->execSqlCoro(R"sql(
-		DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint
-				WHERE conrelid='public.pages'::regclass
-				  AND conname='pages_search_vector_size'
-			) THEN
-				ALTER TABLE public.pages ADD CONSTRAINT pages_search_vector_size
-					CHECK (search_vector IS NULL OR pg_column_size(search_vector) <= 49152)
-					NOT VALID;
-			END IF;
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint
-				WHERE conrelid='public.pages'::regclass
-				  AND conname='pages_english_search_vector_size'
-			) THEN
-				ALTER TABLE public.pages ADD CONSTRAINT pages_english_search_vector_size
-					CHECK (english_search_vector IS NULL OR pg_column_size(english_search_vector) <= 49152)
-					NOT VALID;
-			END IF;
-		END
-		$$
 	)sql");
 
 	co_await db->execSqlCoro(R"(
@@ -678,18 +598,6 @@ Task<> rebuildHilltop(bool rebuild_text_search)
                 SET has_explicit_title=source.real_title,
                     title_vector=to_tsvector('simple',
                         CASE WHEN source.real_title THEN coalesce(source.title, '') ELSE '' END),
-                    search_vector=
-                        setweight(to_tsvector('simple', CASE WHEN source.real_title THEN coalesce(source.title, '') ELSE '' END), 'A') ||
-                        setweight(to_tsvector('simple', source.search_headings), 'B') ||
-                        setweight(to_tsvector('simple', source.index_url || ' ' || source.search_link_text), 'C') ||
-                        setweight(to_tsvector('simple', coalesce(source.content_body, '')), 'D'),
-                    english_search_vector=CASE
-                        WHEN source.lang IS NULL OR lower(split_part(source.lang, ',', 1)) ~ '^en([_-]|$)' THEN
-                            setweight(to_tsvector('english', CASE WHEN source.real_title THEN coalesce(source.title, '') ELSE '' END), 'A') ||
-                            setweight(to_tsvector('english', source.search_headings), 'B') ||
-                            setweight(to_tsvector('english', source.index_url || ' ' || source.search_link_text), 'C') ||
-                            setweight(to_tsvector('english', coalesce(source.content_body, '')), 'D')
-                        ELSE NULL END,
                     search_schema_version=greatest(source.search_schema_version, 1)
                 FROM source
                 WHERE pages.url=source.url
@@ -776,20 +684,16 @@ Task<> hilltopStatus(bool include_text_search)
                 SELECT count(*) FILTER (WHERE last_indexed_at IS NOT NULL) AS indexed_pages,
                        count(*) FILTER (WHERE search_schema_version >= 1) AS structured_vectors,
                        count(*) FILTER (WHERE search_schema_version >= 2) AS parsed_fields,
-                       count(*) FILTER (WHERE search_schema_version >= 3) AS bounded_vectors,
-                       count(*) FILTER (WHERE english_search_vector IS NOT NULL) AS english_vectors,
-                       count(*) FILTER (WHERE pg_column_size(search_vector) > 49152) AS oversized_simple,
-                       count(*) FILTER (WHERE pg_column_size(english_search_vector) > 49152) AS oversized_english
+                       count(*) FILTER (WHERE search_schema_version >= 3) AS parsed_content,
+                       count(*) FILTER (WHERE title_vector IS NOT NULL) AS title_vectors
                 FROM pages
             )sql");
-            std::cout << "Text search index\n"
+            std::cout << "Search index\n"
                       << "Indexed pages: " << fts[0]["indexed_pages"].as<size_t>() << '\n'
-                      << "Structured vectors: " << fts[0]["structured_vectors"].as<size_t>() << '\n'
+                      << "Structured pages: " << fts[0]["structured_vectors"].as<size_t>() << '\n'
                       << "Parsed field vectors: " << fts[0]["parsed_fields"].as<size_t>() << '\n'
-                      << "Bounded vectors: " << fts[0]["bounded_vectors"].as<size_t>() << '\n'
-                      << "English stemming vectors: " << fts[0]["english_vectors"].as<size_t>() << '\n'
-                      << "Oversized simple vectors: " << fts[0]["oversized_simple"].as<size_t>() << '\n'
-                      << "Oversized English vectors: " << fts[0]["oversized_english"].as<size_t>() << "\n\n";
+                      << "Parsed content: " << fts[0]["parsed_content"].as<size_t>() << '\n'
+                      << "Title vectors: " << fts[0]["title_vectors"].as<size_t>() << "\n\n";
         }
         const auto rows = co_await app().getDbClient()->execSqlCoro(R"sql(
             SELECT state.active_ruleset_id AS ruleset_id,
@@ -845,6 +749,25 @@ Task<> retireLegacyFtsIndexes()
     }
     catch(const std::exception& error) {
         std::cerr << "Cannot retire legacy FTS indexes: " << error.what() << '\n';
+    }
+    app().quit();
+}
+
+Task<> retireLegacyFtsVectors()
+{
+    try {
+        // Run this only after the server and crawler that no longer reference
+        // these columns have been deployed.  ALTER TABLE takes an exclusive
+        // lock, but dropping the columns itself is metadata-only.
+        co_await app().getDbClient()->execSqlCoro(R"sql(
+            ALTER TABLE public.pages
+                DROP COLUMN IF EXISTS search_vector,
+                DROP COLUMN IF EXISTS english_search_vector
+        )sql");
+        std::cout << "Retired search_vector and english_search_vector columns\n";
+    }
+    catch(const std::exception& error) {
+        std::cerr << "Cannot retire legacy FTS vectors: " << error.what() << '\n';
     }
     app().quit();
 }
@@ -1306,11 +1229,13 @@ int main(int argc, char** argv)
 		"search-index", "Build and inspect the FTS and authority indexes used by default search");
 	search_index.require_subcommand(1);
 	CLI::App& rebuild_search_index = *search_index.add_subcommand(
-		"rebuild", "Migrate missing structured FTS vectors and rebuild authority recommendations");
+		"rebuild", "Migrate missing title vectors and rebuild authority recommendations");
 	CLI::App& search_index_status = *search_index.add_subcommand(
-		"status", "Show FTS and authority index statistics");
+		"status", "Show BM25/title and authority index statistics");
 	CLI::App& retire_legacy_fts = *search_index.add_subcommand(
 		"retire-legacy", "Drop the two old page FTS GIN indexes after deploying BM25/title search");
+	CLI::App& retire_legacy_vectors = *search_index.add_subcommand(
+		"retire-legacy-vectors", "Drop unused page FTS vector columns after deploying the BM25-only server and crawler");
 
 	CLI::App& hilltop = *cli.add_subcommand("hilltop", "Hilltop experiments and compatibility commands");
 	hilltop.require_subcommand(1);
@@ -1382,6 +1307,9 @@ int main(int argc, char** argv)
 	}
 	else if(retire_legacy_fts) {
 		app().getLoop()->queueInLoop(async_func(retireLegacyFtsIndexes));
+	}
+	else if(retire_legacy_vectors) {
+		app().getLoop()->queueInLoop(async_func(retireLegacyFtsVectors));
 	}
 	else if(query_hilltop) {
 		app().getLoop()->queueInLoop(async_func(std::bind(queryHilltop, hilltop_query)));

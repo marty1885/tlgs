@@ -1440,7 +1440,8 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         auto db = app().getDbClient();
         auto page_data = co_await db->execSqlCoro(R"sql(
             SELECT pages.url, pages.size, pages.title, pages.content_type,
-                   CASE WHEN pages.english_search_vector IS NOT NULL
+                   CASE WHEN pages.lang IS NULL
+                                  OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
                         THEN ts_headline('english', SUBSTRING(pages.content_body, 0, 5000),
                                          websearch_to_tsquery('english', $1),
                                          'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '

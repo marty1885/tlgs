@@ -104,9 +104,9 @@ sudo systemctl start tlgs_server
 sudo systemctl start tlgs_crawler
 ```
 
-### Via OpenBSD rc
+### Via OpenBSD rc.d
 
-On OpenBSD, installation places an `rc.d(8)` script at `/etc/rc.d/tlgs_server`. Other data and service account needs to be creatred, install TLGS, and enable the server:
+On OpenBSD, installation places `rc.d(8)` scripts at `/etc/rc.d/tlgs_server` and `/etc/rc.d/tlgs_crawler`. Create the service account and runtime directories, install TLGS, then enable the server:
 
 ```sh
 doas useradd -c "TLGS service account" -d /var/empty -s /sbin/nologin _tlgs
@@ -129,11 +129,34 @@ doas rcctl stop tlgs_server
 Edit `/etc/tlgs/server_config.json` before the first start. The `_tlgs` user must be able to read the configured TLS certificate and key and connect to the
 configured PostgreSQL database.
 
-`tlgs_crawler` is a finite job thus (unlike under systemd) is not a part of RC daemons. Run it manually as `_tlgs`, or invoke it from `/etc/daily.local` for a daily update:
+The crawler is a finite job. Its rc.d wrapper changes directory to `/var/tlgs`, runs as `_tlgs`, passes `/etc/tlgs/config.json` as its default argument, and logs through syslog. It may be started or stopped with `rcctl`:
 
 ```sh
-doas -u _tlgs /usr/local/bin/tlgs_crawler /etc/tlgs/config.json
+doas rcctl start tlgs_crawler
+doas rcctl check tlgs_crawler
+doas rcctl stop tlgs_crawler
 ```
+
+Extra crawler arguments belong in `daemon_flags`; for example, this limits a controlled run to 100 TARDIS update pages:
+
+```sh
+doas rcctl set tlgs_crawler flags '/etc/tlgs/config.json --max-pages 100'
+```
+
+For normal production use, leave the default flags in place. Schedule the job from `/etc/daily.local` (which must be executable) with:
+
+```sh
+#!/bin/ksh
+/etc/rc.d/tlgs_crawler start
+```
+
+Alternatively, use root's crontab for a fixed time, for example 00:15 daily:
+
+```cron
+15 0 * * * /etc/rc.d/tlgs_crawler start
+```
+
+The wrapper creates `/var/tlgs/tlgs_crawler.lock` atomically and records the crawler PID before it `exec`s the crawler. If a crawl takes more than a day, the next scheduled invocation logs a skip instead of starting a second crawl. A lock left by a completed or crashed crawler is identified as stale and removed on the next invocation. Do not enable `tlgs_crawler` with `rcctl enable`: it is intentionally started by the scheduler, not at boot.
 
 ## Server config
 
