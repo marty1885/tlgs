@@ -240,7 +240,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                     "search_link_text = EXCLUDED.search_link_text, search_schema_version = EXCLUDED.search_schema_version, "
                     "title_vector = EXCLUDED.title_vector;",
                     parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, feed_type, title, capture.status, capture.meta,
-                    indexed_content_hash, raw_content_hash, index_friendly_url);
+                    indexed_content_hash, raw_content_hash);
                 continue;
             }
             // Even when TARDIS omits a body, its metadata is sufficient for
@@ -959,28 +959,19 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
                 return link_url.str();
             });
 
-        auto index_friendly_url = indexFriendly(url);
-        truncateUtf8(index_friendly_url, 2000);
         auto indexed_title = sampleUtf8(has_explicit_title ? title : "", 1024);
-        auto indexed_headings = sampleUtf8(headings, 8 * 1024);
-        auto indexed_link_text = sampleUtf8(link_text, 8 * 1024);
-        auto indexed_body = sampleUtf8(body, 32 * 1024);
-        auto reduced_headings = sampleUtf8(headings, 4 * 1024);
-        auto reduced_link_text = sampleUtf8(link_text, 4 * 1024);
-        auto reduced_body = sampleUtf8(body, 16 * 1024);
-        auto minimal_headings = sampleUtf8(headings, 1024);
-        auto minimal_link_text = sampleUtf8(link_text, 1024);
-        auto minimal_body = sampleUtf8(body, 4 * 1024);
+        // Keep the full URL, title, headings, link text, body, and language in
+        // pages. Search vectors and bounded samples can be rebuilt from those
+        // columns without fetching the page again.
         co_await db->execSqlCoro("UPDATE pages SET content_body = $2, size = $3, charset = $4, lang = $5, last_crawled_at = CURRENT_TIMESTAMP, "
             "last_crawl_success_at = CURRENT_TIMESTAMP, last_status = $6, last_meta = $7, content_type = $8, title = $9, "
             "cross_site_links = $10::json, internal_links = $11::json, indexed_content_hash = $12, raw_content_hash = $13, feed_type = $14, "
-            "has_explicit_title = $16, search_headings = $17, search_link_text = $18, "
-            "title_vector = to_tsvector('simple', $19), "
+            "has_explicit_title = $15, search_headings = $16, search_link_text = $17, "
+            "title_vector = to_tsvector('simple', $18), "
             "search_schema_version = 3, last_indexed_at = CURRENT_TIMESTAMP WHERE url = $1;",
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
-            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type, index_friendly_url,
-            has_explicit_title, headings, link_text, indexed_title, indexed_headings, indexed_link_text, indexed_body,
-            reduced_headings, reduced_link_text, reduced_body, minimal_headings, minimal_link_text, minimal_body);
+            , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type,
+            has_explicit_title, headings, link_text, indexed_title);
         if(internal_links.size() == 0 && cross_site_links.size() == 0)
             co_return true;
 
