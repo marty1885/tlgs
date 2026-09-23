@@ -1,5 +1,20 @@
 #include <tlgsutils/utils.hpp>
+#include <tlgsutils/counter.hpp>
 #include <drogon/drogon_test.h>
+
+DROGON_TEST(CounterTracksRemainingCrawls)
+{
+    std::atomic<size_t> active{0};
+    tlgs::Counter first(active);
+    tlgs::Counter second(active);
+    CHECK(active == 2);
+    CHECK(first.release() == 1);
+    CHECK(active == 1);
+    tlgs::Counter moved(std::move(second));
+    CHECK(active == 1);
+    CHECK(moved.release() == 0);
+    CHECK(active == 0);
+}
 
 DROGON_TEST(AsciiArtDetectorTest)
 {

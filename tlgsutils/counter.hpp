@@ -14,11 +14,11 @@ struct Counter
         count_ = counter_->fetch_add(1, std::memory_order_acq_rel);
     }
 
-    Counter(Counter&& other)
+    Counter(Counter&& other) noexcept
+        : count_(other.count_), counter_(other.counter_)
     {
-        other.counter_ = counter_;
-        other.count_ = count_;
-        counter_ = nullptr;
+        other.counter_ = nullptr;
+        other.count_ = -1;
     }
 
     size_t count() const

@@ -51,23 +51,15 @@ public:
      */
     Task<void> awaitEnd()
     {
-        int finish_count = 0;
         while(true) {
             co_await drogon::sleepCoro(loop_, 0.2);
-            if(ended_)
+            if(ended_ && ongoing_crawlings_ == 0 && craw_queue_.empty())
                 break;
 
-            // HACK: Sometimes ended_ is not set. Workaround when we see 5 conseqitive 0 crawlings 
-            if(ongoing_crawlings_ == 0) {
-                finish_count ++;
+            // A completed crawl schedules its replacement after releasing its
+            // slot. Retry dispatch if that callback has not run yet.
+            if(ongoing_crawlings_ == 0 && !ended_)
                 loop_->runInLoop([this] {dispatchCrawl();});
-            }
-            else
-                finish_count = 0;
-            if(finish_count == 5) {
-                ended_ = true;
-                break;
-            }
         }
         co_return;
     }

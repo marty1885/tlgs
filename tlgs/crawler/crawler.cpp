@@ -606,7 +606,7 @@ void GeminiCrawler::dispatchCrawl()
         // 2. The current crawl is the last one in existance
         //    * Since a crawler can add new items into the queue
         if(url_str.has_value() == false) {
-            if(counter->release() == 1)
+            if(counter->release() == 0)
                 ended_ = true;
             co_return;
         }
@@ -646,11 +646,13 @@ void GeminiCrawler::dispatchCrawl()
             if(retry_delay != 0)
                 co_await drogon::sleepCoro(loop_, retry_delay);
         }
+        counter->release();
         loop_->queueInLoop([this](){dispatchCrawl();});
     }
     catch(std::exception& e) {
         LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
-        dispatchCrawl();
+        counter->release();
+        loop_->queueInLoop([this](){dispatchCrawl();});
     }});
 }
 
