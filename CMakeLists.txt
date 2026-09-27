@@ -30,6 +30,7 @@ add_subdirectory(thrid_party/dremini)
 include_directories(thrid_party/dremini)
 add_subdirectory(thrid_party/spartoi)
 include_directories(thrid_party/spartoi)
+add_subdirectory(thrid_party/libtarpit EXCLUDE_FROM_ALL)
 
 find_package(Drogon REQUIRED)
 include_directories(.)

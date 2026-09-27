@@ -7,3 +7,6 @@
 [submodule "thrid_party/spartoi"]
 	path = thrid_party/spartoi
 	url = https://github.com/marty1885/spartoi
+[submodule "thrid_party/libtarpit"]
+	path = thrid_party/libtarpit
+	url = https://github.com/marty1885/libtarpit.git

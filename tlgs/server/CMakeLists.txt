@@ -3,7 +3,9 @@ add_executable(tlgs_server
   known_security_txt.cpp
   controllers/search.cpp
   controllers/tools.cpp
-  controllers/api.cpp)
+  controllers/api.cpp
+  controllers/decoy.cpp
+  controllers/tarpit.cpp)
   target_compile_features(tlgs_server PRIVATE cxx_std_20)
 find_package(fmt REQUIRED)
 target_link_libraries(tlgs_server PRIVATE Drogon::Drogon dremini tlgsutils fmt::fmt spartoi)

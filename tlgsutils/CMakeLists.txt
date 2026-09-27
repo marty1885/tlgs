@@ -1,6 +1,8 @@
 find_package(toml11 REQUIRED)
-add_library(tlgsutils gemini_parser.cpp robots_txt_parser.cpp site_identity.cpp url_parser.cpp utils.cpp)
+find_package(fmt REQUIRED)
+add_library(tlgsutils gemini_parser.cpp robots_txt_parser.cpp site_identity.cpp tarpit.cpp url_parser.cpp utils.cpp)
 target_link_libraries(tlgsutils PUBLIC Drogon::Drogon dremini xxhash toml11::toml11)
+target_link_libraries(tlgsutils PRIVATE fmt::fmt libtarpit::tarpit)
 target_compile_features(tlgsutils PRIVATE cxx_std_20)
 
 if(TLGS_BUILD_TESTS)

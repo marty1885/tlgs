@@ -6,3 +6,5 @@ Disallow: /v/search_jump
 Disallow: /add_seed
 Disallow: /backlinks
 Disallow: /api
+Disallow: /tarpit
+Disallow: /tarpit/

@@ -18,10 +18,12 @@
 using namespace drogon;
 using namespace dremini;
 
+void registerDecoyHandler();
 
 int main(int argc, char** argv)
 {
     app().setLogLevel(trantor::Logger::LogLevel::kTrace);
+    registerDecoyHandler();
     app().registerHandler("/",
         [](const HttpRequestPtr& req,
            std::function<void (const HttpResponsePtr &)> &&callback)
