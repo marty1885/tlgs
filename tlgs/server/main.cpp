@@ -2,6 +2,7 @@
 #include <dremini/GeminiServerPlugin.hpp>
 #include <spartoi/SpartanServerPlugin.hpp>
 #include <tlgsutils/url_parser.hpp>
+#include <stdexcept>
 
 #ifdef __linux__
 #define LLUNVEIL_USE_UNVEIL
@@ -92,18 +93,38 @@ int main(int argc, char** argv)
             resp->setContentTypeCodeAndCustomString(CT_CUSTOM, "text/gemini");
             callback(resp);
         });
-    
+
     app().getLoop()->queueInLoop([](){
         #if defined(__linux__) || defined(__OpenBSD__)
-        // Lockdown the server to only access the files in the document directory
-        unveil(drogon::app().getDocumentRoot().c_str(), "r");
-        unveil(drogon::app().getUploadPath().c_str(), "rwc");
+        auto allow = [](const std::string& path, const char* permissions) {
+            if(path.empty()) return;
+            const int result = unveil(path.c_str(), permissions);
+            #if defined(__OpenBSD__)
+            if(result == -1)
+                throw std::runtime_error("unable to unveil: " + path);
+            #else
+            (void)result;
+            #endif
+        };
+        allow(drogon::app().getDocumentRoot(), "r");
+        allow(drogon::app().getUploadPath(), "rwc");
+        // /add_seed contacts TARDIS with this client identity.
         const auto &tardis = drogon::app().getCustomConfig()["tardis"];
-        const auto certificate = tardis.get("certificate", "").asString();
-        const auto privateKey = tardis.get("private_key", "").asString();
-        if(!certificate.empty()) unveil(certificate.c_str(), "r");
-        if(!privateKey.empty()) unveil(privateKey.c_str(), "r");
-        unveil(nullptr, nullptr);
+        allow(tardis.get("certificate", "").asString(), "r");
+        allow(tardis.get("private_key", "").asString(), "r");
+        const int locked = unveil(nullptr, nullptr);
+        #if defined(__OpenBSD__)
+        if(locked == -1)
+            throw std::runtime_error("unable to lock TLGS server unveil rules");
+        #else
+        (void)locked;
+        #endif
+        #endif
+
+        #if defined(__OpenBSD__)
+        // we need wpatch and cpath for drogon's upload spool
+        if(pledge("stdio rpath wpath cpath inet unix dns", nullptr) == -1)
+            throw std::runtime_error("unable to pledge TLGS server");
         #endif
     });
 
@@ -116,7 +137,7 @@ int main(int argc, char** argv)
             std::string result;
             std::string line;
             while(std::getline(ss, line)) {
-                if(line.starts_with("=>") && 
+                if(line.starts_with("=>") &&
                     (line.find("/search") != std::string::npos || line.find("/backlinks") != std::string::npos
                     || line.find("/add_seed") != std::string::npos) && line.find("/doc") == std::string::npos
                     && line.find("?") == std::string::npos) {

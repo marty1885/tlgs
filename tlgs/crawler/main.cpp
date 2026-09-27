@@ -7,6 +7,8 @@
 #include "CLI/Config.hpp"
 
 #include <fstream>
+#include <stdexcept>
+#include <unistd.h>
 
 using namespace drogon;
 using namespace trantor;
@@ -50,9 +52,32 @@ int main(int argc, char** argv)
     // Server configs may also contain HTTP listeners and server plugins.  The
     // crawler only needs its database and source settings and must never bind
     // a serving port or initialize serving plugins.
-    app().loadConfigJson(loadCrawlerConfig(config_file));
+    const auto config = loadCrawlerConfig(config_file);
+    app().loadConfigJson(config);
 
     app().getLoop()->queueInLoop(async_func([&]() -> Task<void> {
+#ifdef __OpenBSD__
+        // Drogon has started; install the sandbox before the first crawl.
+        const auto uploadPath = app().getUploadPath();
+        if(unveil(uploadPath.c_str(), "rwc") == -1)
+            throw std::runtime_error("unable to unveil Drogon upload spool: " + uploadPath);
+        const auto& custom = app().getCustomConfig()["tardis"];
+        for(const auto* field : {"certificate", "private_key"}) {
+            const auto path = custom.get(field, "").asString();
+            if(!path.empty() && unveil(path.c_str(), "r") == -1)
+                throw std::runtime_error("unable to unveil crawler " + std::string(field) + ": " + path);
+        }
+        // Drogon does not expose database hosts through getCustomConfig().
+        for(const auto& db : config["db_clients"]) {
+            const auto host = db.get("host", "").asString();
+            if(!host.empty() && host.front() == '/' && unveil(host.c_str(), "w") == -1)
+                throw std::runtime_error("unable to unveil PostgreSQL socket directory: " + host);
+        }
+        if(unveil(nullptr, nullptr) == -1)
+            throw std::runtime_error("unable to lock TLGS crawler unveil rules");
+        if(pledge("stdio rpath wpath cpath inet unix dns", nullptr) == -1)
+            throw std::runtime_error("unable to pledge TLGS crawler");
+#endif
         auto crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
         const auto tardis = app().getCustomConfig()["tardis"];
         if(tardis.isNull())
