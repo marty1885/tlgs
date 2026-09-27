@@ -40,18 +40,6 @@ add_subdirectory(tlgs)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     install(FILES systemd/tlgs_crawler.service systemd/tlgs_crawler.timer systemd/tlgs_server.service DESTINATION /etc/systemd/)
     install(FILES systemd/tlgs.conf DESTINATION lib/sysuser.d)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
-    configure_file(openbsd/tlgs_server.in tlgs_server.rc @ONLY)
-    configure_file(openbsd/tlgs_crawler.in tlgs_crawler.rc @ONLY)
-    configure_file(openbsd/tlgs_crawler_runner.in tlgs_crawler_runner @ONLY)
-    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/tlgs_server.rc"
-            DESTINATION /etc/rc.d
-            RENAME tlgs_server)
-    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/tlgs_crawler.rc"
-            DESTINATION /etc/rc.d
-            RENAME tlgs_crawler)
-    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/tlgs_crawler_runner"
-            DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/tlgs")
 endif()
 
 include(Package.cmake)
