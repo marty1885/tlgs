@@ -108,6 +108,11 @@ int main(int argc, char** argv)
         };
         allow(drogon::app().getDocumentRoot(), "r");
         allow(drogon::app().getUploadPath(), "rwc");
+        #if defined(__OpenBSD__)
+        // Trantor's c-ares resolver reads these directly for /add_seed.
+        allow("/etc/resolv.conf", "r");
+        allow("/etc/hosts", "r");
+        #endif
         // /add_seed contacts TARDIS with this client identity.
         const auto &tardis = drogon::app().getCustomConfig()["tardis"];
         allow(tardis.get("certificate", "").asString(), "r");

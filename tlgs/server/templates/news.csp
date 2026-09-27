@@ -2,7 +2,7 @@
 
 ### 2026-09-27
 
-Due to influx of unkown bot hitting the search linke. A tarpit inspired by buffering.party is added to prevent absuive resource use. Among other security measurments to help slow down attacks. TLGS is now also proudly using OpenBSD to serve! Including using pledge() and unveil() for sandboxing.
+Due to influx of unkown bot hitting the search links. A tarpit inspired by buffering.party is added to prevent absuive resource use. Among other security measurments to help slow down attacks. TLGS is now also proudly using OpenBSD to serve! Including using pledge() and unveil() for sandboxing.
 
 => gemini://buffering.party/tarpit/ Tarpit on buffering.party
 

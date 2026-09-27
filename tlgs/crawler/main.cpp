@@ -61,6 +61,12 @@ int main(int argc, char** argv)
         const auto uploadPath = app().getUploadPath();
         if(unveil(uploadPath.c_str(), "rwc") == -1)
             throw std::runtime_error("unable to unveil Drogon upload spool: " + uploadPath);
+        // Trantor may use c-ares, which reads these files itself rather than
+        // using libc's resolver access granted by the dns pledge.
+        for(const auto* path : {"/etc/resolv.conf", "/etc/hosts"}) {
+            if(unveil(path, "r") == -1)
+                throw std::runtime_error("unable to unveil DNS configuration: " + std::string(path));
+        }
         const auto& custom = app().getCustomConfig()["tardis"];
         for(const auto* field : {"certificate", "private_key"}) {
             const auto path = custom.get(field, "").asString();
