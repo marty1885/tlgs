@@ -1505,8 +1505,12 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     auto t2 = high_resolution_clock::now();
     double processing_time = duration_cast<duration<double>>(t2 - t1).count();
-    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds."
-        , input, cache_status, processing_time);
+    const auto& peer_ip = req->getAttributes()->get<std::string>("peer_ip");
+    const auto& protocol = req->getAttributes()->get<std::string>("protocol");
+    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds. source: {}, proto: {}."
+        , input, cache_status, processing_time
+        , peer_ip.empty() ? req->peerAddr().toIp() : peer_ip
+        , protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol);
     co_return resp;
 }
 
