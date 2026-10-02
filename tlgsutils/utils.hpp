@@ -24,6 +24,18 @@ bool isAsciiArt(const std::string& str);
 std::string urlEncode(const std::string_view str);
 
 /**
+ * @brief Make a string safe to place inside a single gemtext line by
+ * replacing control characters (including CR and LF) with spaces
+ */
+std::string geminiLineText(const std::string_view str);
+
+/**
+ * @brief Make a URL safe to use as a gemtext link target by percent-encoding
+ * whitespace and control characters
+ */
+std::string geminiLinkTarget(const std::string_view url);
+
+/**
  * @brief Compose a URL and a path
  * 
  * @param url the URL

@@ -162,5 +162,22 @@ DROGON_TEST(PgSQLEscape)
 
 DROGON_TEST(XXHashTest)
 {
-  CHECK(tlgs::xxHash64("Hello, World!") == "C49AACF8080FE47F");
+  // xxHash64 hex-encodes the hash in host (little-endian) byte order rather
+  // than canonical XXH64 order (C49AACF8080FE47F). Stored hashes depend on it.
+  CHECK(tlgs::xxHash64("Hello, World!") == "7FE40F08F8AC9AC4");
+}
+
+DROGON_TEST(GeminiLineTextTest)
+{
+    CHECK(tlgs::geminiLineText("plain title") == "plain title");
+    CHECK(tlgs::geminiLineText("a\n=> gemini://evil x") == "a => gemini://evil x");
+    CHECK(tlgs::geminiLineText("a\r\nb\tc\x7f") == "a  b c ");
+    CHECK(tlgs::geminiLineText("日本語") == "日本語");
+}
+
+DROGON_TEST(GeminiLinkTargetTest)
+{
+    CHECK(tlgs::geminiLinkTarget("gemini://example.com/a?b") == "gemini://example.com/a?b");
+    CHECK(tlgs::geminiLinkTarget("gemini://example.com/a\n=> x") == "gemini://example.com/a%0A=>%20x");
+    CHECK(tlgs::geminiLinkTarget("gemini://example.com/\r\t") == "gemini://example.com/%0D%09");
 }

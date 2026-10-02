@@ -1,7 +1,10 @@
+<%inc
+#include <tlgsutils/utils.hpp>
+%>
 <%c++
 std::string title = @@.get<std::string>("title");
 if(!title.empty()) {
-    $$ << "# " << title << "\n";
+    $$ << "# " << tlgs::geminiLineText(title) << "\n";
 }
 else {
     $$ << "# TLGS - \"Totally Legit\" Gemini Search - 2.0";

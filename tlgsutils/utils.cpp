@@ -82,6 +82,31 @@ std::string tlgs::urlEncode(const std::string_view src)
     return result;
 }
 
+std::string tlgs::geminiLineText(const std::string_view str)
+{
+    std::string result(str);
+    for(auto& ch : result) {
+        if((unsigned char)ch < 0x20 || ch == 0x7f)
+            ch = ' ';
+    }
+    return result;
+}
+
+std::string tlgs::geminiLinkTarget(const std::string_view url)
+{
+    std::string result;
+    result.reserve(url.size());
+    for(char ch : url) {
+        if((unsigned char)ch <= 0x20 || ch == 0x7f) {
+            result.append(1, '%');
+            result.append(charToHex(ch));
+        }
+        else
+            result.append(1, ch);
+    }
+    return result;
+}
+
 tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
 {
     assert(path.size() != 0);

@@ -2,6 +2,7 @@
 #include "search_result.hpp"
 #include <drogon/utils/Utilities.h>
 #include <tlgsutils/url_parser.hpp>
+#include <tlgsutils/utils.hpp>
 #include <fmt/format.h>
 %>
 <%view header %>
@@ -58,18 +59,21 @@ for(const auto& result : search_result) {
     if(content_type.empty())
         content_type = "unknown/none";
     auto url = tlgs::Url(result.url);
+    const auto link_target = tlgs::geminiLinkTarget(url.str());
+    const auto title = tlgs::geminiLineText(result.title);
+    content_type = tlgs::geminiLineText(content_type);
     if(size_in_kb != 0)
-        $$ << fmt::format("=> {} {} ({}, {}KB)\n", url.str(), result.title, content_type, size_in_kb);
+        $$ << fmt::format("=> {} {} ({}, {}KB)\n", link_target, title, content_type, size_in_kb);
     else
-        $$ << fmt::format("=> {} {} ({})\n", url.str(), result.title, content_type);
+        $$ << fmt::format("=> {} {} ({})\n", link_target, title, content_type);
     if(result.title != url.str())
-        $$ << "* " << utils::urlDecode(url.str()) << "\n";
+        $$ << "* " << tlgs::geminiLineText(utils::urlDecode(url.str())) << "\n";
     if(verbose_mode) {
         $$ << "* Score: " << result.score << "\n";
         $$ << "* Last Crawled: " << result.last_crawled_at << "\n";
     }
     $$ << sanitize_previw(result.preview) << "\n";
-    $$ << "=> " << url2tardis(url.str())  << " 📦 Archived page\n";
+    $$ << "=> " << tlgs::geminiLinkTarget(url2tardis(url.str()))  << " 📦 Archived page\n";
     $$ << "\n";
 }
 

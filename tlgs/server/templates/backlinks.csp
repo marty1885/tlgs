@@ -1,3 +1,6 @@
+<%inc
+#include <tlgsutils/utils.hpp>
+%>
 <%view header %>
 
 <%c++
@@ -6,10 +9,10 @@ const auto& external_backlinks = @@.get<std::vector<std::string>>("external_back
 
 $$ << external_backlinks.size() << " cross-capsule backlinks\n";
 for(const auto& url : external_backlinks)
-	$$ << "=>" << url << "\n";
+	$$ << "=> " << tlgs::geminiLinkTarget(url) << "\n";
 
 $$ << "\n";
 $$ << internal_backlinks.size() << " internal backlinks\n";
 for(const auto& url : internal_backlinks)
-	$$ << "=>" << url << "\n";
+	$$ << "=> " << tlgs::geminiLinkTarget(url) << "\n";
 %>
