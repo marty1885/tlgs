@@ -8,11 +8,16 @@
 #include <nlohmann/json.hpp>
 #include <ranges>
 #include <atomic>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <regex>
 #include <span>
 #include <random>
 #include <filesystem>
 #include <fmt/format.h>
+#include <xxhash.h>
 
 #include "search_result.hpp"
 
@@ -138,41 +143,29 @@ struct SearchFilter
     }
 };
 
+struct SearchCacheKey
+{
+    SearchCacheKey(const std::string& query, const SearchFilter& filter);
+
+    uint64_t hash;
+    std::string canonical;
+
+    bool operator==(const SearchCacheKey& other) const
+    {
+        return hash == other.hash && canonical == other.canonical;
+    }
+};
+
 namespace std
 {
 template<>
-struct hash<FilterConstrant>
+struct hash<SearchCacheKey>
 {
-    size_t operator()(const FilterConstrant& fc) const
+    size_t operator()(const SearchCacheKey& key) const noexcept
     {
-        return std::hash<std::string>{}(fc.value) + fc.negate;
-    }
-};
-
-template<>
-struct hash<SizeConstrant>
-{
-    size_t operator()(const SizeConstrant& sc) const
-    {
-        return std::hash<size_t>{}(sc.size) + sc.greater;
-    }
-};
-
-template<>
-struct hash<SearchFilter>
-{
-    size_t operator()(const SearchFilter& sf) const
-    {
-        size_t hash = 0;
-        for(const auto& fc : sf.content_type)
-            hash ^= std::hash<FilterConstrant>{}(fc);
-        for(const auto& dc : sf.domain)
-            hash ^= std::hash<FilterConstrant>{}(dc);
-        for(const auto& sc : sf.size)
-            hash ^= std::hash<SizeConstrant>{}(sc);
-        for(const auto& tc : sf.title)
-            hash ^= std::hash<FilterConstrant>{}(tc);
-        return hash;
+        if constexpr(sizeof(size_t) < sizeof(key.hash))
+            return static_cast<size_t>(key.hash ^ (key.hash >> 32));
+        return static_cast<size_t>(key.hash);
     }
 };
 }
@@ -199,6 +192,25 @@ std::optional<size_t> parseSizeUnits(std::string unit)
         return 1024*1024*1024;
     else
         return {};
+}
+
+std::optional<size_t> parseSizeValue(const std::string& number, const size_t unit)
+{
+    errno = 0;
+    char* end = nullptr;
+    const long double value = std::strtold(number.c_str(), &end);
+    if(end != number.data() + number.size() || errno == ERANGE || !std::isfinite(value)
+        || value < 0)
+        return {};
+
+    const long double scaled = value * static_cast<long double>(unit);
+    // Keep the conversion strictly inside size_t's range. Rejecting the exact
+    // maximum avoids a rounded floating-point boundary becoming undefined
+    // behaviour during the conversion.
+    if(!std::isfinite(scaled)
+        || scaled >= static_cast<long double>(std::numeric_limits<size_t>::max()))
+        return {};
+    return static_cast<size_t>(scaled);
 }
 
 std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
@@ -257,8 +269,13 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
                     negate = false;
                     continue;
                 }
-                size_t size = std::stod(match[2])*unit.value();
-                filter.size.push_back({size, bool(negate^greater)});
+                const auto size = parseSizeValue(match[2].str(), *unit);
+                if(!size.has_value()) {
+                    LOG_DEBUG << "Bad size value: " << tlgs::logText(match[2].str());
+                    negate = false;
+                    continue;
+                }
+                filter.size.push_back({*size, bool(negate^greater)});
             }
             negate = false;
         }
@@ -306,6 +323,19 @@ nlohmann::json serializeSearchFilter(const SearchFilter& filter)
     for(const auto& item : filter.title)
         result["title"].push_back({{"value", item.value}, {"negate", item.negate}});
     return result;
+}
+
+SearchCacheKey::SearchCacheKey(const std::string& query, const SearchFilter& filter)
+{
+    static const uint64_t seed = [] {
+        std::random_device random;
+        return (static_cast<uint64_t>(random()) << 32) ^ random();
+    }();
+
+    canonical = query;
+    canonical.push_back('\0');
+    canonical += serializeSearchFilter(filter).dump();
+    hash = XXH3_64bits_withSeed(canonical.data(), canonical.size(), seed);
 }
 
 /**
@@ -1395,18 +1425,14 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     using RankedResults = std::vector<RankedResult>;
 
-    static CacheMap<std::string, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
+    static CacheMap<SearchCacheKey, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
     const auto requested_page = tlgs::try_strtoull(
         std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
     const size_t current_page_idx = std::max<uint64_t>(requested_page, 1) - 1;
 
-    static const size_t fixed_random = std::random_device()();
-    const auto hasher = std::hash<std::string>();
-    const auto filter_hasher = std::hash<SearchFilter>();
-    const auto query_hash = hasher(query_str)^fixed_random;
-    const auto filter_hash = filter_hasher(filter)^fixed_random;
-    const auto filtered_result_cache_key = query_str + "|" + std::to_string(query_hash)
-        + "|" + std::to_string(filter_hash);
+    // A per-launch seeded hash prevents chosen-bucket attacks, while retaining
+    // the canonical input in the key makes hash collisions harmless.
+    const SearchCacheKey filtered_result_cache_key(query_str, filter);
     std::string cache_status = "(fully cached)";
 
     std::shared_ptr<RankedResults> filtered_result;
