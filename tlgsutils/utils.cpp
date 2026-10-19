@@ -82,6 +82,23 @@ std::string tlgs::urlEncode(const std::string_view src)
     return result;
 }
 
+std::string tlgs::logText(const std::string_view str)
+{
+    std::string result;
+    result.reserve(str.size());
+    for(const unsigned char ch : str) {
+        if(ch == '\\')
+            result += "\\\\";
+        else if(ch < 0x20 || ch == 0x7f) {
+            result += "\\x";
+            result += charToHex(static_cast<char>(ch));
+        }
+        else
+            result.push_back(static_cast<char>(ch));
+    }
+    return result;
+}
+
 std::string tlgs::geminiLineText(const std::string_view str)
 {
     std::string result(str);

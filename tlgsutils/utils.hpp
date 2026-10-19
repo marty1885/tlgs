@@ -29,6 +29,9 @@ std::string urlEncode(const std::string_view str);
  */
 std::string geminiLineText(const std::string_view str);
 
+/** Escape ASCII controls and backslashes for unambiguous, single-line logs. */
+std::string logText(const std::string_view str);
+
 /**
  * @brief Make a URL safe to use as a gemtext link target by percent-encoding
  * whitespace and control characters

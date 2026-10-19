@@ -181,3 +181,34 @@ DROGON_TEST(GeminiLinkTargetTest)
     CHECK(tlgs::geminiLinkTarget("gemini://example.com/a\n=> x") == "gemini://example.com/a%0A=>%20x");
     CHECK(tlgs::geminiLinkTarget("gemini://example.com/\r\t") == "gemini://example.com/%0D%09");
 }
+
+DROGON_TEST(LogTextTest)
+{
+    CHECK(tlgs::logText("ordinary 日本語") == "ordinary 日本語");
+    CHECK(tlgs::logText("a\r\nforged\t\x1b[31m\x7f") == "a\\x0D\\x0Aforged\\x09\\x1B[31m\\x7F");
+    CHECK(tlgs::logText(std::string("a\0b", 3)) == "a\\x00b");
+    CHECK(tlgs::logText("\\x0A") == "\\\\x0A");
+}
+
+DROGON_TEST(UntrustedInventoryFieldsStayOnOneLine)
+{
+    const std::string url = "gemini://example.test\r\n=> gemini://evil.test/.well-known/security.txt";
+    const auto target = tlgs::geminiLinkTarget(url);
+    const auto label = tlgs::geminiLineText("example.test\r\n=> forged\tlabel");
+    const auto line = "=> " + target + " " + label;
+    CHECK(line.find_first_of("\r\n\t") == std::string::npos);
+    CHECK(target.find("%0D%0A") != std::string::npos);
+    CHECK(target.find(' ') == std::string::npos);
+}
+
+DROGON_TEST(LogTextEscapesEveryAsciiControl)
+{
+    for(unsigned int ch = 0; ch <= 0x7f; ++ch) {
+        if(ch >= 0x20 && ch != 0x7f)
+            continue;
+        const auto escaped = tlgs::logText(std::string(1, static_cast<char>(ch)));
+        CHECK(escaped.size() == 4);
+        CHECK(escaped.substr(0, 2) == "\\x");
+        CHECK(escaped.find(static_cast<char>(ch)) == std::string::npos);
+    }
+}

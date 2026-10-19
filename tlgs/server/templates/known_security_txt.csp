@@ -1,6 +1,7 @@
 <%view header %>
 <%inc
 #include <tlgsutils/url_parser.hpp>
+#include <tlgsutils/utils.hpp>
 %>
 
 This is a list of security.txt (RFC 9116) files known to TLGS. These files provide contact information for reporting security issues. The list includes files accessible to the TLGS crawler.
@@ -9,6 +10,6 @@ This is a list of security.txt (RFC 9116) files known to TLGS. These files provi
 auto security_txt = @@.get<std::shared_ptr<std::vector<std::string>>>("security_txt");
 for(const auto& url : *security_txt) {
     std::string host = tlgs::Url(url).hostWithPort(1965);
-    $$ << "=> " << url << " " << host << "\n";
+    $$ << "=> " << tlgs::geminiLinkTarget(url) << " " << tlgs::geminiLineText(host) << "\n";
 }
 %>

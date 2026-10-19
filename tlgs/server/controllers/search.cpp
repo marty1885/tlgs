@@ -246,14 +246,14 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
                 static const std::regex re(R"(([><])([\.0-9]+)([GBKMibyte]+)?)", std::regex_constants::icase);
                 std::smatch match;
                 if(std::regex_match(value, match, re) == false) {
-                    LOG_DEBUG << "Bad size filter: " << token;
+                    LOG_DEBUG << "Bad size filter: " << tlgs::logText(token);
                     negate = false;
                     continue;
                 }
                 bool greater = match[1] == ">";
                 auto unit = parseSizeUnits(match[3].str());
                 if(!unit.has_value()) {
-                    LOG_DEBUG << "Bad size unit: " << match[3].str();
+                    LOG_DEBUG << "Bad size unit: " << tlgs::logText(match[3].str());
                     negate = false;
                     continue;
                 }
@@ -554,7 +554,7 @@ std::vector<RankedResult> deduplicateRankedResults(
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now() - started);
     LOG_DEBUG << "Deduplication removed " << num_root - result_map.size()
-              << " results for search term `" << query << "` in "
+              << " results for search term `" << tlgs::logText(query) << "` in "
               << elapsed.count() << "ms";
     return results;
 }
@@ -769,7 +769,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         LIMIT $2
     )sql", query_str, fusion_bm25_candidate_limit, filter_json);
         const auto bm25_finished = Clock::now();
-        LOG_DEBUG << "BM25 retrieval for `" << query_str << "`: "
+        LOG_DEBUG << "BM25 retrieval for `" << tlgs::logText(query_str) << "`: "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
                          bm25_finished - bm25_started).count()
                   << "ms (" << bm25_rows.size() << " candidates, filters "
@@ -929,7 +929,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         site_decay, filter_json, fusion_title_candidate_limit,
         bm25_candidates.dump());
         const auto ranked_finished = Clock::now();
-        LOG_DEBUG << "Lexical stages for `" << query_str << "`: BM25 "
+        LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
                          bm25_finished - bm25_started).count()
                   << "ms (" << bm25_rows.size() << " candidates), title/rerank "
@@ -1151,7 +1151,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     const auto milliseconds = [](const auto begin, const auto end) {
         return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
     };
-    LOG_DEBUG << "Fusion search timings for `" << query_str << "`: FTS "
+    LOG_DEBUG << "Fusion search timings for `" << tlgs::logText(query_str) << "`: FTS "
               << fts_query.duration.count() << "ms (" << rows.size()
               << " candidates), Hilltop " << hilltop_query.duration.count()
               << "ms (" << authority_rows.size() << " authority targets, "
@@ -1465,7 +1465,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         for(const auto& item : std::ranges::subrange(begin, end)) {
             auto it = result_idx.find(item.url);
             if(it == result_idx.end()) {
-                LOG_WARN << "Somehow found " << item.url << " in search. But that URL does not exist in DB";
+                LOG_WARN << "Somehow found " << tlgs::logText(item.url) << " in search. But that URL does not exist in DB";
                 continue;
             }
 
@@ -1508,9 +1508,9 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     const auto& peer_ip = req->getAttributes()->get<std::string>("peer_ip");
     const auto& protocol = req->getAttributes()->get<std::string>("protocol");
     LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds. source: {}, proto: {}."
-        , input, cache_status, processing_time
-        , peer_ip.empty() ? req->peerAddr().toIp() : peer_ip
-        , protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol);
+        , tlgs::logText(input), cache_status, processing_time
+        , tlgs::logText(peer_ip.empty() ? req->peerAddr().toIp() : peer_ip)
+        , tlgs::logText(protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol));
     co_return resp;
 }
 
