@@ -1,5 +1,9 @@
 <%view header %>
 
+### 2026-10-21
+
+Congraduations to OpenBSD releasing version 8.0 today! TLGS also has been updated to run on OpenBSD 8.0. In the mean time, the raking herustic has been updated to remove unnecessary terms and optimized the search result highlighting. You should have a better search experience in both speed and preview quality.
+
 ### 2026-09-27
 
 Due to influx of unkown bot hitting the search links. A tarpit inspired by buffering.party is added to prevent absuive resource use. Among other security measurments to help slow down attacks. TLGS is now also proudly using OpenBSD to serve! Including using pledge() and unveil() for sandboxing.
