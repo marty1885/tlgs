@@ -28,7 +28,6 @@ namespace
 constexpr size_t search_results_per_page = 10;
 constexpr size_t fusion_candidate_limit = 1000;
 constexpr size_t fusion_bm25_candidate_limit = 5000;
-constexpr size_t fusion_title_candidate_limit = 1000;
 constexpr size_t fusion_graph_candidate_limit = 250;
 constexpr double fusion_rrf_constant = 60.0;
 
@@ -814,93 +813,16 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         WITH query AS (
             SELECT websearch_to_tsquery('simple', $1) AS simple,
                    phraseto_tsquery('simple', $1) AS simple_phrase
-        ), filters AS (
-            SELECT $5::jsonb AS value
         ), active AS (
             SELECT (
                 SELECT active_ruleset_id
                 FROM site_identity_state
                 WHERE singleton=TRUE
             ) AS ruleset_id
-        ), eligible AS NOT MATERIALIZED (
-            SELECT pages.*
-            FROM pages
-            CROSS JOIN filters
-            WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                    WHERE (item->>'negate')::boolean
-                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-                )
-                AND (
-                    NOT EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                        WHERE NOT (item->>'negate')::boolean
-                    )
-                    OR EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                        WHERE NOT (item->>'negate')::boolean
-                          AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-                    )
-                )
-              ))
-              AND (jsonb_array_length(filters.value->'domain')=0 OR (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                    WHERE (item->>'negate')::boolean
-                      AND lower(pages.domain_name)=lower(item->>'value')
-                )
-                AND (
-                    NOT EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                        WHERE NOT (item->>'negate')::boolean
-                    )
-                    OR EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                        WHERE NOT (item->>'negate')::boolean
-                          AND lower(pages.domain_name)=lower(item->>'value')
-                    )
-                )
-              ))
-              AND (
-                jsonb_array_length(filters.value->'size')=0
-                OR (pages.size > 0 AND NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
-                    WHERE CASE WHEN (item->>'greater')::boolean
-                               THEN pages.size <= (item->>'size')::bigint
-                               ELSE pages.size >= (item->>'size')::bigint END
-                ))
-              )
-              AND (jsonb_array_length(filters.value->'title')=0 OR (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                    WHERE (item->>'negate')::boolean
-                      AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                    WHERE NOT (item->>'negate')::boolean
-                      AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
-                )
-              ))
-        ), bm25_matches AS MATERIALIZED (
-            SELECT url, bm25_distance
-            FROM jsonb_to_recordset($7::jsonb)
-                 AS bm25(url text, bm25_distance double precision)
-        ), title_matches AS MATERIALIZED (
-            SELECT pages.url
-            FROM eligible pages
-            CROSS JOIN query
-            WHERE pages.title_vector @@ query.simple
-            LIMIT $6
         ), retrieved AS MATERIALIZED (
-            SELECT matches.url, min(matches.bm25_distance) AS bm25_distance
-            FROM (
-                SELECT url, bm25_distance FROM bm25_matches
-                UNION ALL
-                SELECT url, NULL::double precision FROM title_matches
-            ) matches
-            GROUP BY matches.url
+            SELECT url, bm25_distance
+            FROM jsonb_to_recordset($5::jsonb)
+                 AS bm25(url text, bm25_distance double precision)
         ), lexical_scored AS (
             SELECT pages.url, pages.content_type, pages.size,
                    pages.indexed_content_hash AS content_hash,
@@ -956,13 +878,12 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", query_str, fusion_bm25_candidate_limit, fusion_candidate_limit,
-        site_decay, filter_json, fusion_title_candidate_limit,
-        bm25_candidates.dump());
+        site_decay, bm25_candidates.dump());
         const auto ranked_finished = Clock::now();
         LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
                          bm25_finished - bm25_started).count()
-                  << "ms (" << bm25_rows.size() << " candidates), title/rerank "
+                  << "ms (" << bm25_rows.size() << " candidates), rerank "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
                          ranked_finished - bm25_finished).count() << "ms";
         co_return ranked_rows;
@@ -1461,26 +1382,39 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     std::vector<SearchResult> search_result;
     if(!selected_urls.empty()) {
-        // HACK: Use the first 5K characters for highligh search. This is MUCH faster
-        // without loosing too much accuracy
+        // Excerpt selection accepts partial matches even when a BM25 result
+        // does not satisfy the full Boolean query. Keep document parsing bounded.
         auto db = app().getDbClient();
         auto page_data = co_await db->execSqlCoro(R"sql(
+            WITH headline_queries AS MATERIALIZED (
+                SELECT websearch_to_tsquery('english', $1) AS english_full,
+                       websearch_to_tsquery('simple', $1) AS simple_full,
+                       websearch_to_tsquery('english', $3) AS english_partial,
+                       websearch_to_tsquery('simple', $3) AS simple_partial
+            )
             SELECT pages.url, pages.size, pages.title, pages.content_type,
                    CASE WHEN pages.lang IS NULL
                                   OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
                         THEN ts_headline('english', SUBSTRING(pages.content_body, 0, 5000),
-                                         websearch_to_tsquery('english', $1),
+                                         CASE WHEN to_tsvector('english', SUBSTRING(pages.content_body, 0, 5000))
+                                                   @@ headline_queries.english_full
+                                              THEN headline_queries.english_full
+                                              ELSE headline_queries.english_partial END,
                                          'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
                                          'MaxFragments=1, FragmentDelimiter=" ... "')
                         ELSE ts_headline('simple', SUBSTRING(pages.content_body, 0, 5000),
-                                         websearch_to_tsquery('simple', $1),
-                       'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
+                                         CASE WHEN to_tsvector('simple', SUBSTRING(pages.content_body, 0, 5000))
+                                                   @@ headline_queries.simple_full
+                                              THEN headline_queries.simple_full
+                                              ELSE headline_queries.simple_partial END,
+                                         'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
                                          'MaxFragments=1, FragmentDelimiter=" ... "') END AS preview,
                    pages.last_crawl_success_at
             FROM pages
             JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
               ON requested.url=pages.url
-        )sql", query_str, selected_urls.dump());
+            CROSS JOIN headline_queries
+        )sql", query_str, selected_urls.dump(), tlgs::highlightQuery(query_str));
 
         std::unordered_map<std::string, size_t> result_idx;
         for(size_t i=0;i<page_data.size();i++) {

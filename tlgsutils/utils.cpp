@@ -22,6 +22,41 @@ static std::string charToHex(char c)
     return result;
 }
 
+std::string tlgs::highlightQuery(const std::string_view query)
+{
+    std::string result;
+    const std::string_view whitespace = " \t\r\n\f\v";
+    size_t position = 0;
+    while(position < query.size()) {
+        position = query.find_first_not_of(whitespace, position);
+        if(position == std::string_view::npos)
+            break;
+        const auto start = position;
+        bool quoted = false;
+        while(position < query.size()) {
+            const auto ch = query[position];
+            if(ch == '"')
+                quoted = !quoted;
+            if(!quoted && whitespace.find(ch) != std::string_view::npos)
+                break;
+            ++position;
+        }
+        const auto term = query.substr(start, position - start);
+        const bool is_or = term.size() == 2
+            && (term[0] == 'o' || term[0] == 'O')
+            && (term[1] == 'r' || term[1] == 'R');
+        if(term.front() == '-' || is_or)
+            continue;
+        if(!result.empty())
+            result += " OR ";
+        result += term;
+        // websearch accepts an unfinished phrase; close it before adding OR.
+        if(quoted)
+            result.push_back('"');
+    }
+    return result;
+}
+
 bool tlgs::isAsciiArt(const std::string& str)
 {
     // detection algorithm 2.A from https://www.w3.org/WAI/ER/IG/ert/AsciiArt.htm

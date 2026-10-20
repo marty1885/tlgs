@@ -2,6 +2,18 @@
 #include <tlgsutils/counter.hpp>
 #include <drogon/drogon_test.h>
 
+DROGON_TEST(HighlightQueryKeepsPositiveTermsAndPhrases)
+{
+    CHECK(tlgs::highlightQuery("gemini search engines") == "gemini OR search OR engines");
+    CHECK(tlgs::highlightQuery("  gemini\tOR\nspartan ") == "gemini OR spartan");
+    CHECK(tlgs::highlightQuery("gemini -http -\"web browsers\" protocol") == "gemini OR protocol");
+    CHECK(tlgs::highlightQuery("\"client certificates\" gemini") == "\"client certificates\" OR gemini");
+    CHECK(tlgs::highlightQuery("gemini \"unfinished phrase") == "gemini OR \"unfinished phrase\"");
+    CHECK(tlgs::highlightQuery("中文 café O'Reilly") == "中文 OR café OR O'Reilly");
+    CHECK(tlgs::highlightQuery(" -http -\"web browsers\" OR ").empty());
+    CHECK(tlgs::highlightQuery("").empty());
+}
+
 DROGON_TEST(CounterTracksRemainingCrawls)
 {
     std::atomic<size_t> active{0};

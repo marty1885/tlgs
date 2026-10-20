@@ -32,6 +32,9 @@ std::string geminiLineText(const std::string_view str);
 /** Escape ASCII controls and backslashes for unambiguous, single-line logs. */
 std::string logText(const std::string_view str);
 
+/** Build a websearch query for excerpts: positive terms/phrases joined by OR. */
+std::string highlightQuery(std::string_view query);
+
 /**
  * @brief Make a URL safe to use as a gemtext link target by percent-encoding
  * whitespace and control characters
