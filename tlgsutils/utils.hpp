@@ -35,6 +35,9 @@ std::string logText(const std::string_view str);
 /** Build a websearch query for excerpts: positive terms/phrases joined by OR. */
 std::string highlightQuery(std::string_view query);
 
+/** Choose a short excerpt from text marked with ASCII RS/US by ts_headline. */
+std::string highlightSnippet(std::string_view marked_text);
+
 /**
  * @brief Make a URL safe to use as a gemtext link target by percent-encoding
  * whitespace and control characters

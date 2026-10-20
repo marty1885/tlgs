@@ -1382,39 +1382,31 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     std::vector<SearchResult> search_result;
     if(!selected_urls.empty()) {
-        // Excerpt selection accepts partial matches even when a BM25 result
-        // does not satisfy the full Boolean query. Keep document parsing bounded.
+        // PostgreSQL parses and marks the bounded text once. Choose the excerpt
+        // in C++ so partial matches do not require a second database text parse.
         auto db = app().getDbClient();
         auto page_data = co_await db->execSqlCoro(R"sql(
             WITH headline_queries AS MATERIALIZED (
-                SELECT websearch_to_tsquery('english', $1) AS english_full,
-                       websearch_to_tsquery('simple', $1) AS simple_full,
-                       websearch_to_tsquery('english', $3) AS english_partial,
-                       websearch_to_tsquery('simple', $3) AS simple_partial
+                SELECT websearch_to_tsquery('english', $1) AS english_partial,
+                       websearch_to_tsquery('simple', $1) AS simple_partial
             )
             SELECT pages.url, pages.size, pages.title, pages.content_type,
                    CASE WHEN pages.lang IS NULL
                                   OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
-                        THEN ts_headline('english', SUBSTRING(pages.content_body, 0, 5000),
-                                         CASE WHEN to_tsvector('english', SUBSTRING(pages.content_body, 0, 5000))
-                                                   @@ headline_queries.english_full
-                                              THEN headline_queries.english_full
-                                              ELSE headline_queries.english_partial END,
-                                         'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
-                                         'MaxFragments=1, FragmentDelimiter=" ... "')
-                        ELSE ts_headline('simple', SUBSTRING(pages.content_body, 0, 5000),
-                                         CASE WHEN to_tsvector('simple', SUBSTRING(pages.content_body, 0, 5000))
-                                                   @@ headline_queries.simple_full
-                                              THEN headline_queries.simple_full
-                                              ELSE headline_queries.simple_partial END,
-                                         'StartSel="[", StopSel="]", MinWords=23, MaxWords=37, '
-                                         'MaxFragments=1, FragmentDelimiter=" ... "') END AS preview,
+                        THEN ts_headline('english',
+                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
+                                         headline_queries.english_partial,
+                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"')
+                        ELSE ts_headline('simple',
+                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
+                                         headline_queries.simple_partial,
+                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"') END AS preview,
                    pages.last_crawl_success_at
             FROM pages
             JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
               ON requested.url=pages.url
             CROSS JOIN headline_queries
-        )sql", query_str, selected_urls.dump(), tlgs::highlightQuery(query_str));
+        )sql", tlgs::highlightQuery(query_str), selected_urls.dump());
 
         std::unordered_map<std::string, size_t> result_idx;
         for(size_t i=0;i<page_data.size();i++) {
@@ -1438,7 +1430,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
                 .url = item.url,
                 .title = page["title"].as<std::string>(),
                 .content_type = page["content_type"].as<std::string>(),
-                .preview = page["preview"].as<std::string>(),
+                .preview = tlgs::highlightSnippet(page["preview"].as<std::string>()),
                 .last_crawled_at = last_crawled_at,
                 .size = page["size"].as<uint64_t>(),
                 .score = item.score

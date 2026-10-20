@@ -14,6 +14,53 @@ DROGON_TEST(HighlightQueryKeepsPositiveTermsAndPhrases)
     CHECK(tlgs::highlightQuery("").empty());
 }
 
+DROGON_TEST(HighlightSnippetFindsDistinctTermsAndKeepsContext)
+{
+    const auto mark = [](std::string_view word) {
+        return std::string(1, '\x1e') + std::string(word) + '\x1f';
+    };
+    std::string document;
+    for(size_t i = 0; i < 60; ++i)
+        document += "intro ";
+    document += "You can use " + mark("client") + " " + mark("certificates")
+        + " for authentication in " + mark("Gemini") + " browsers. More context follows.";
+    const auto snippet = tlgs::highlightSnippet(document);
+    CHECK(snippet.find("[client] [certificates]") != std::string::npos);
+    CHECK(snippet.find("[Gemini]") != std::string::npos);
+    CHECK(snippet.starts_with("... "));
+    CHECK(snippet.find('\x1e') == std::string::npos);
+    CHECK(snippet.find('\x1f') == std::string::npos);
+    CHECK(snippet.size() < document.size());
+
+    // Repetition of one term must not beat a passage explaining several terms.
+    document.clear();
+    for(size_t i = 0; i < 50; ++i)
+        document += mark("gemini") + " ";
+    for(size_t i = 0; i < 40; ++i)
+        document += "background ";
+    document += mark("Gemini") + " uses " + mark("TLS") + " " + mark("certificates");
+    const auto diverse = tlgs::highlightSnippet(document);
+    CHECK(diverse.find("[TLS] [certificates]") != std::string::npos);
+}
+
+DROGON_TEST(HighlightSnippetHandlesPlainTextAndUnicode)
+{
+    CHECK(tlgs::highlightSnippet("").empty());
+    CHECK(tlgs::highlightSnippet(" \n\t ").empty());
+    CHECK(tlgs::highlightSnippet("Literal [brackets]\nremain intact.") == "Literal [brackets] remain intact.");
+    const auto marked = std::string("日本語 ") + '\x1e' + "café" + '\x1f' + " and "
+        + '\x1e' + "O'Reilly" + '\x1f' + ".";
+    CHECK(tlgs::highlightSnippet(marked) == "日本語 [café] and [O'Reilly].");
+    CHECK(tlgs::highlightSnippet(std::string(1, '\x1e') + "several words" + '\x1f') == "[several] [words]");
+
+    std::string plain;
+    for(size_t i = 0; i < 60; ++i)
+        plain += "word ";
+    const auto opening = tlgs::highlightSnippet(plain);
+    CHECK(opening.ends_with(" ..."));
+    CHECK(std::count(opening.begin(), opening.end(), ' ') == 23);
+}
+
 DROGON_TEST(CounterTracksRemainingCrawls)
 {
     std::atomic<size_t> active{0};

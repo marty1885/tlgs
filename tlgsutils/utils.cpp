@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <iostream>
 #include <cassert>
+#include <unordered_map>
 #include <xxhash.h>
 #include <drogon/utils/Utilities.h>
 
@@ -54,6 +55,116 @@ std::string tlgs::highlightQuery(const std::string_view query)
         if(quoted)
             result.push_back('"');
     }
+    return result;
+}
+
+std::string tlgs::highlightSnippet(const std::string_view marked_text)
+{
+    constexpr size_t min_words = 23;
+    constexpr size_t max_words = 37;
+    constexpr size_t context_words = 5;
+    struct Word {
+        std::string text;
+        std::vector<size_t> terms;
+    };
+    std::vector<Word> words;
+    std::unordered_map<std::string, size_t> term_ids;
+    Word word;
+    std::string match;
+    bool highlighting = false;
+    const auto finish_match = [&] {
+        if(match.empty())
+            return;
+        word.text += '[' + match + ']';
+        auto normalized = match;
+        for(auto& ch : normalized) {
+            if(ch >= 'A' && ch <= 'Z')
+                ch += 'a' - 'A';
+        }
+        const auto id = term_ids.try_emplace(std::move(normalized), term_ids.size()).first->second;
+        word.terms.push_back(id);
+        match.clear();
+    };
+    const auto finish_word = [&] {
+        finish_match();
+        if(!word.text.empty()) {
+            words.emplace_back(std::move(word));
+            word = Word{};
+        }
+    };
+    for(const auto ch : marked_text) {
+        if(ch == '\x1e') {
+            finish_match();
+            highlighting = true;
+        }
+        else if(ch == '\x1f') {
+            finish_match();
+            highlighting = false;
+        }
+        else if(std::string_view{" \t\r\n\f\v"}.find(ch) != std::string_view::npos)
+            finish_word();
+        else if(highlighting)
+            match += ch;
+        else
+            word.text += ch;
+    }
+    finish_word();
+
+    // A fixed-size sliding window rewards distinct terms before repetition.
+    // Only short windows are inspected; document length cannot make this quadratic.
+    std::vector<size_t> frequency(term_ids.size());
+    size_t distinct = 0, hits = 0;
+    size_t best_distinct = 0, best_hits = 0;
+    size_t best_first = 0, best_last = 0, best_span = max_words + 1;
+    for(size_t right = 0; right < words.size(); ++right) {
+        for(const auto id : words[right].terms) {
+            if(frequency[id]++ == 0)
+                ++distinct;
+            ++hits;
+        }
+        const auto left = right >= max_words ? right - max_words + 1 : 0;
+        if(right >= max_words) {
+            for(const auto id : words[left - 1].terms) {
+                if(--frequency[id] == 0)
+                    --distinct;
+                --hits;
+            }
+        }
+        if(hits == 0 || distinct < best_distinct
+            || (distinct == best_distinct && hits < best_hits))
+            continue;
+        auto first = left;
+        auto last = right;
+        while(words[first].terms.empty())
+            ++first;
+        while(words[last].terms.empty())
+            --last;
+        const auto span = last - first + 1;
+        if(distinct > best_distinct || hits > best_hits || span < best_span) {
+            best_distinct = distinct;
+            best_hits = hits;
+            best_first = first;
+            best_last = last;
+            best_span = span;
+        }
+    }
+
+    size_t begin = 0, end = std::min(min_words, words.size());
+    if(best_hits != 0) {
+        begin = best_first > context_words ? best_first - context_words : 0;
+        if(best_last - begin >= max_words)
+            begin = best_last - max_words + 1;
+        end = std::min(words.size(), std::min(begin + max_words,
+            std::max(begin + min_words, best_last + context_words + 1)));
+    }
+    std::string result = begin == 0 ? "" : "... ";
+    for(auto i = begin; i < end; ++i) {
+        if(i != begin)
+            result += ' ';
+        result += words[i].text;
+    }
+    if(end < words.size())
+        result += " ...";
     return result;
 }
 
