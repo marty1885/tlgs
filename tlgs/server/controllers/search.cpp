@@ -28,6 +28,7 @@ namespace
 constexpr size_t search_results_per_page = 10;
 constexpr size_t fusion_candidate_limit = 1000;
 constexpr size_t fusion_bm25_candidate_limit = 5000;
+constexpr size_t fusion_max_site_candidates = 20;
 constexpr size_t fusion_graph_candidate_limit = 250;
 constexpr double fusion_rrf_constant = 60.0;
 
@@ -716,7 +717,9 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     const auto filter_json = serializeSearchFilter(filter).dump();
     auto fts_task = executeTimed(
         [db, query_str, filter_json, filter_empty=filter.empty(),
-         site_decay=fusion_site_decay]() -> Task<orm::Result> {
+         site_candidate_limit=std::any_of(filter.domain.begin(), filter.domain.end(),
+             [](const auto& domain) { return !domain.negate; })
+             ? fusion_candidate_limit : fusion_max_site_candidates]() -> Task<orm::Result> {
         // Keep BM25 as a top-level query. In a CTE PostgreSQL projects the
         // ORDER BY expression again, tokenizing every returned document.
         const auto bm25_started = Clock::now();
@@ -810,10 +813,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                 {"bm25_distance", row["bm25_distance"].as<double>()}
             });
         auto ranked_rows = co_await db->execSqlCoro(R"sql(
-        WITH query AS (
-            SELECT websearch_to_tsquery('simple', $1) AS simple,
-                   phraseto_tsquery('simple', $1) AS simple_phrase
-        ), active AS (
+        WITH active AS (
             SELECT (
                 SELECT active_ruleset_id
                 FROM site_identity_state
@@ -821,7 +821,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
             ) AS ruleset_id
         ), retrieved AS MATERIALIZED (
             SELECT url, bm25_distance
-            FROM jsonb_to_recordset($5::jsonb)
+            FROM jsonb_to_recordset($1::jsonb)
                  AS bm25(url text, bm25_distance double precision)
         ), lexical_scored AS (
             SELECT pages.url, pages.content_type, pages.size,
@@ -829,17 +829,11 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                    concat('gemini://', lower(pages.domain_name),
                           CASE WHEN pages.port = 1965 THEN ''
                                ELSE ':' || pages.port::text END) AS physical_site,
-                   (CASE WHEN pages.title_vector @@ query.simple THEN 1.0 ELSE 0.0 END +
-                    CASE WHEN pages.title_vector @@ query.simple_phrase THEN 0.5 ELSE 0.0 END +
-                    CASE WHEN retrieved.bm25_distance < 0 THEN
-                        0.5 * (-retrieved.bm25_distance) /
-                        (1.0 - retrieved.bm25_distance)
-                    ELSE 0.0 END)::double precision AS fts_score
+                   -- BM25 already weights title/headings; avoid a second title bonus.
+                   -retrieved.bm25_distance AS fts_score
             FROM retrieved
             JOIN pages ON pages.url=retrieved.url
-            CROSS JOIN query
             WHERE retrieved.bm25_distance < 0
-               OR pages.title_vector @@ query.simple
         ), lexical_pool AS MATERIALIZED (
             SELECT * FROM lexical_scored
             ORDER BY fts_score DESC, url
@@ -860,16 +854,16 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                    ) AS lexical_site_rank
             FROM lexical_mapped
         ), lexical AS MATERIALIZED (
-            SELECT lexical_site_ranked.*,
-                   (fts_score /
-                    (1.0 + $4::double precision * (lexical_site_rank - 1)))::double precision
-                       AS lexical_score
+            -- Bound each site's candidate share; explicit domain searches keep their depth.
+            -- Soft site decay is applied after fusion, not at both stages.
+            SELECT lexical_site_ranked.*
             FROM lexical_site_ranked
-            ORDER BY lexical_score DESC, url
+            WHERE lexical_site_rank <= $4::bigint
+            ORDER BY fts_score DESC, url
             LIMIT $3
         ), candidates AS MATERIALIZED (
             SELECT lexical.*,
-                   row_number() OVER (ORDER BY lexical_score DESC, url) AS fts_rank
+                   row_number() OVER (ORDER BY fts_score DESC, url) AS fts_rank
             FROM lexical
         )
         SELECT candidates.url, candidates.content_type, candidates.size,
@@ -877,8 +871,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
                candidates.fts_rank
         FROM candidates
         ORDER BY candidates.fts_rank
-    )sql", query_str, fusion_bm25_candidate_limit, fusion_candidate_limit,
-        site_decay, bm25_candidates.dump());
+    )sql", bm25_candidates.dump(), fusion_bm25_candidate_limit, fusion_candidate_limit,
+        site_candidate_limit);
         const auto ranked_finished = Clock::now();
         LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
