@@ -79,6 +79,7 @@
 			 "private_key": "../../tlgs-tardis-client-key.pem"
 		 },
 		 "tlgs": {
+			 "search_api_token": "",
 			 "ranking_algo": "fusion",
 			 "fusion_graph_weight": 1.0,
 			 "fusion_site_decay": 0.5,

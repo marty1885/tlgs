@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <charconv>
 #include <drogon/HttpController.h>
 #include <drogon/utils/coroutine.h>
 #include <drogon/HttpAppFramework.h>
@@ -56,9 +57,29 @@ struct RankedResult
     std::string url;
     std::string logical_site;
     std::string content_type;
-    size_t size;
-    uint64_t content_hash;
-    double score;
+    size_t size = 0;
+    uint64_t content_hash = 0;
+    double score = 0;
+};
+
+struct RetrievalCandidate
+{
+    RankedResult result;
+    size_t fts_rank = 0;
+    size_t graph_rank = 0;
+    double bm25_score = 0;
+    double authority_score = 0;
+    size_t independent_sites = 0;
+    std::string indexed_content_hash;
+    double fused_score = 0;
+};
+
+struct RetrievalBatch
+{
+    std::vector<RetrievalCandidate> candidates;
+    double bm25_ms = 0;
+    double hilltop_ms = 0;
+    double total_ms = 0;
 };
 
 struct SearchFilter;
@@ -75,11 +96,13 @@ public:
 
     SearchController();
     Task<HttpResponsePtr> tlgs_search(HttpRequestPtr req);
+    Task<HttpResponsePtr> search_api(HttpRequestPtr req);
     Task<HttpResponsePtr> add_seed(HttpRequestPtr req);
     Task<HttpResponsePtr> jump_search(HttpRequestPtr req, std::string search_term);
     Task<HttpResponsePtr> backlinks(HttpRequestPtr req);
 
     METHOD_LIST_BEGIN
+    ADD_METHOD_TO(SearchController::search_api, "/api/v1/search", {Get});
     ADD_METHOD_TO(SearchController::tlgs_search, "/search", {Get});
     ADD_METHOD_TO(SearchController::tlgs_search, "/search/{page}", {Get});
     ADD_METHOD_TO(SearchController::jump_search, "/search_jump/{search_term}", {Get});
@@ -94,6 +117,11 @@ public:
         const std::string& query_str, const SearchFilter& filter);
     Task<std::vector<RankedResult>> fusionSearch(
         const std::string& query_str, const SearchFilter& filter);
+    Task<std::shared_ptr<std::vector<RankedResult>>> cachedSearch(
+        const std::string& query, const SearchFilter& filter, bool& cache_hit);
+    Task<RetrievalBatch> retrieveCandidates(
+        const std::string& query_str, const SearchFilter& filter);
+    std::string search_api_token;
     std::atomic<size_t> search_in_flight{0};
     RankingAlgorithm ranking_algorithm = RankingAlgorithm::FUSION;
     double fusion_graph_weight = 1.0;
@@ -634,6 +662,16 @@ SearchController::SearchController()
     if(tlgs.isNull())
         return;
 
+    const auto& api_token = tlgs["search_api_token"];
+    if(!api_token.isNull()) {
+        if(!api_token.isString())
+            throw std::invalid_argument("search_api_token must be a string");
+        search_api_token = api_token.asString();
+        if(std::any_of(search_api_token.begin(), search_api_token.end(),
+                       [](unsigned char c) { return c <= 32 || c >= 127; }))
+            throw std::invalid_argument("search_api_token must contain printable non-whitespace ASCII");
+    }
+
     auto ranking_algo = tlgs["ranking_algo"];
     if(!ranking_algo.isNull()) {
         if(!ranking_algo.isString()) {
@@ -708,7 +746,7 @@ SearchController::SearchController()
     }
 }
 
-Task<std::vector<RankedResult>> SearchController::fusionSearch(
+Task<RetrievalBatch> SearchController::retrieveCandidates(
     const std::string& query_str, const SearchFilter& filter)
 {
     using Clock = std::chrono::steady_clock;
@@ -868,7 +906,7 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         )
         SELECT candidates.url, candidates.content_type, candidates.size,
                candidates.content_hash, candidates.target_site,
-               candidates.fts_rank
+               candidates.fts_rank, candidates.fts_score
         FROM candidates
         ORDER BY candidates.fts_rank
     )sql", bm25_candidates.dump(), fusion_bm25_candidate_limit, fusion_candidate_limit,
@@ -1003,24 +1041,15 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
 
     auto fts_query = co_await std::move(fts_task);
     auto hilltop_query = co_await std::move(hilltop_task);
-    const auto queries_finished = Clock::now();
     const auto& rows = *fts_query.rows;
     const auto& authority_rows = *hilltop_query.rows;
 
-    struct FusionCandidate
-    {
-        RankedResult result;
-        size_t fts_rank = 0;
-        size_t graph_rank = 0;
-        double fused_score = 0;
-    };
-
-    std::vector<FusionCandidate> candidates;
+    std::vector<RetrievalCandidate> candidates;
     candidates.reserve(rows.size() + authority_rows.size());
     std::unordered_map<std::string, size_t> candidate_indexes;
     candidate_indexes.reserve(rows.size() + authority_rows.size());
     for(const auto& row : rows) {
-        FusionCandidate candidate;
+        RetrievalCandidate candidate;
         auto& result = candidate.result;
         result.url = row["url"].as<std::string>();
         result.logical_site = row["target_site"].as<std::string>();
@@ -1032,6 +1061,8 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
             content_hash = "0";
         result.content_hash = std::stoull(content_hash, nullptr, 16);
         candidate.fts_rank = row["fts_rank"].as<int64_t>();
+        candidate.bm25_score = row["fts_score"].as<double>();
+        candidate.indexed_content_hash = row["content_hash"].as<std::string>();
         candidate_indexes.emplace(result.url, candidates.size());
         candidates.emplace_back(std::move(candidate));
     }
@@ -1043,10 +1074,12 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         if(const auto existing = candidate_indexes.find(url);
            existing != candidate_indexes.end()) {
             candidates[existing->second].graph_rank = graph_rank;
+            candidates[existing->second].authority_score = row["authority_score"].as<double>();
+            candidates[existing->second].independent_sites = row["independent_sites"].as<size_t>();
             continue;
         }
 
-        FusionCandidate candidate;
+        RetrievalCandidate candidate;
         candidate.result.url = url;
         candidate.result.logical_site = row["target_site"].as<std::string>();
         if(!row["content_type"].isNull())
@@ -1057,11 +1090,31 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
             content_hash = "0";
         candidate.result.content_hash = std::stoull(content_hash, nullptr, 16);
         candidate.graph_rank = graph_rank;
+        candidate.authority_score = row["authority_score"].as<double>();
+        candidate.independent_sites = row["independent_sites"].as<size_t>();
+        candidate.indexed_content_hash = row["content_hash"].as<std::string>();
         candidate_indexes.emplace(candidate.result.url, candidates.size());
         candidates.emplace_back(std::move(candidate));
         ++graph_only_candidates;
     }
 
+    LOG_DEBUG << "Search retrieval: " << rows.size() << " lexical candidates, "
+              << authority_rows.size() << " Hilltop targets, " << graph_only_candidates
+              << " graph-only candidates";
+    co_return RetrievalBatch {
+        .candidates = std::move(candidates),
+        .bm25_ms = static_cast<double>(fts_query.duration.count()),
+        .hilltop_ms = static_cast<double>(hilltop_query.duration.count()),
+        .total_ms = std::chrono::duration<double,std::milli>(Clock::now()-search_started).count()
+    };
+}
+
+Task<std::vector<RankedResult>> SearchController::fusionSearch(
+    const std::string& query_str, const SearchFilter& filter)
+{
+    auto batch = co_await retrieveCandidates(query_str, filter);
+    auto& candidates = batch.candidates;
+    const auto fusion_started = std::chrono::steady_clock::now();
     for(auto& candidate : candidates) {
         if(candidate.fts_rank != 0)
             candidate.fused_score += 1.0 /
@@ -1092,17 +1145,10 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
         return lhs.url < rhs.url;
     });
 
-    const auto fusion_finished = Clock::now();
-    const auto milliseconds = [](const auto begin, const auto end) {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
-    };
-    LOG_DEBUG << "Fusion search timings for `" << tlgs::logText(query_str) << "`: FTS "
-              << fts_query.duration.count() << "ms (" << rows.size()
-              << " candidates), Hilltop " << hilltop_query.duration.count()
-              << "ms (" << authority_rows.size() << " authority targets, "
-              << graph_only_candidates << " graph-only) "
-              << milliseconds(search_started, queries_finished) << "ms, fusion "
-              << milliseconds(queries_finished, fusion_finished) << "ms";
+    LOG_DEBUG << "Fusion search timings: retrieval " << batch.total_ms
+              << "ms (BM25 " << batch.bm25_ms << "ms, Hilltop " << batch.hilltop_ms
+              << "ms), fusion " << std::chrono::duration<double,std::milli>(
+                     std::chrono::steady_clock::now()-fusion_started).count() << "ms";
 
     auto deduplicated = deduplicateRankedResults(
         results, std::span<const unsigned char>{}, query_str);
@@ -1299,10 +1345,304 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
     co_return deduplicateRankedResults(nodes, is_root, query_str);
 }
 
+Task<std::shared_ptr<std::vector<RankedResult>>> SearchController::cachedSearch(
+    const std::string& query, const SearchFilter& filter, bool& cache_hit)
+{
+    using RankedResults = std::vector<RankedResult>;
+    static CacheMap<SearchCacheKey, std::shared_ptr<RankedResults>> cache(app().getLoop(), 60);
+    const SearchCacheKey key(query, filter);
+    std::shared_ptr<RankedResults> results;
+    cache_hit = cache.findAndFetch(key, results);
+    if(!cache_hit) {
+        results = std::make_shared<RankedResults>(co_await pageSearch(query, filter));
+        cache.insert(key, results, 600);
+    }
+    if(!results) throw std::runtime_error("cached search result is nullptr");
+    co_return results;
+}
+
+namespace
+{
+SearchResult makeSearchResult(const orm::Row& page, double score = 0)
+{
+    const auto last_crawled_at = page["last_crawl_success_at"].isNull()
+        ? "Never"
+        : trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
+            .toCustomFormattedString("%Y-%m-%d %H:%M:%S", false);
+    SearchResult result {
+        .url = page["url"].as<std::string>(),
+        .title = page["title"].as<std::string>(),
+        .content_type = page["content_type"].isNull() ? "" : page["content_type"].as<std::string>(),
+        .preview = tlgs::highlightSnippet(page["preview"].as<std::string>()),
+        .last_crawled_at = last_crawled_at,
+        .size = page["size"].as<uint64_t>(),
+        .score = score
+    };
+    if(result.preview.empty())
+        result.preview = "No preview provided";
+    return result;
+}
+
+// Both renderers fetch page data here. Raw mode adds bounded indexed fields;
+// ordinary search computes the same query-aware preview for Gemini and JSON.
+Task<orm::Result> fetchSearchPageData(
+    const std::string& query, const nlohmann::json& urls, bool raw = false)
+{
+    co_return co_await app().getDbClient()->execSqlCoro(R"sql(
+            WITH headline_queries AS MATERIALIZED (
+                SELECT websearch_to_tsquery('english', $1) AS english_partial,
+                       websearch_to_tsquery('simple', $1) AS simple_partial
+            )
+            SELECT pages.url, pages.size, pages.title, pages.content_type,
+                   left(coalesce(pages.title,''),1024) AS bounded_title,
+                   CASE WHEN $3::boolean THEN ''
+                        WHEN pages.lang IS NULL
+                                  OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
+                        THEN ts_headline('english',
+                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
+                                         headline_queries.english_partial,
+                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"')
+                        ELSE ts_headline('simple',
+                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
+                                         headline_queries.simple_partial,
+                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"') END AS preview,
+                   pages.last_crawl_success_at,
+                   CASE WHEN $3::boolean THEN coalesce(raw_content_hash,'') END AS raw_hash,
+                   CASE WHEN $3::boolean THEN coalesce(indexed_content_hash,'') END AS indexed_hash,
+                   CASE WHEN $3::boolean THEN coalesce(has_explicit_title,false) END AS explicit_title,
+                   CASE WHEN $3::boolean THEN coalesce(lang,'') END AS language,
+                   CASE WHEN $3::boolean THEN left(coalesce(search_headings,''),4096) END AS headings,
+                   CASE WHEN $3::boolean THEN left(coalesce(content_body,''),32768) END AS body,
+                   CASE WHEN $3::boolean THEN left(coalesce(search_link_text,''),8192) END AS link_text,
+                   CASE WHEN $3::boolean THEN length(coalesce(title,''))>1024 END AS title_truncated,
+                   CASE WHEN $3::boolean THEN length(coalesce(search_headings,''))>4096 END AS headings_truncated,
+                   CASE WHEN $3::boolean THEN length(coalesce(content_body,''))>32768 END AS body_truncated,
+                   CASE WHEN $3::boolean THEN length(coalesce(search_link_text,''))>8192 END AS link_text_truncated,
+                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(cross_site_links::jsonb)='array'
+                                THEN jsonb_array_length(cross_site_links::jsonb)>200
+                                ELSE false END END AS external_links_truncated,
+                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(internal_links::jsonb)='array'
+                                THEN jsonb_array_length(internal_links::jsonb)>200
+                                ELSE false END END AS internal_links_truncated,
+                   CASE WHEN $3::boolean THEN jsonb_path_query_array(coalesce(cross_site_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS external_links,
+                   CASE WHEN $3::boolean THEN jsonb_path_query_array(coalesce(internal_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS internal_links
+            FROM pages
+            JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
+              ON requested.url=pages.url
+            CROSS JOIN headline_queries
+        )sql",
+        tlgs::highlightQuery(query), urls.dump(), raw);
+}
+
+std::vector<RetrievalCandidate> interleaveRetrievalCandidates(
+    std::vector<RetrievalCandidate> candidates)
+{
+    std::vector<size_t> lexical, graph;
+    for(size_t i = 0; i < candidates.size(); ++i) {
+        if(candidates[i].fts_rank) lexical.push_back(i);
+        if(candidates[i].graph_rank) graph.push_back(i);
+    }
+    std::sort(lexical.begin(), lexical.end(), [&](size_t a, size_t b) {
+        return candidates[a].fts_rank < candidates[b].fts_rank;
+    });
+    std::sort(graph.begin(), graph.end(), [&](size_t a, size_t b) {
+        if(candidates[a].graph_rank != candidates[b].graph_rank)
+            return candidates[a].graph_rank < candidates[b].graph_rank;
+        return candidates[a].result.url < candidates[b].result.url;
+    });
+    std::vector<RetrievalCandidate> selected;
+    selected.reserve(candidates.size());
+    std::vector<bool> seen(candidates.size(), false);
+    size_t lexical_offset = 0, graph_offset = 0;
+    auto take = [&](const auto& indexes, size_t& offset) {
+        while(offset < indexes.size()) {
+            const auto index = indexes[offset++];
+            if(seen[index]) continue;
+            seen[index] = true;
+            selected.push_back(std::move(candidates[index]));
+            break;
+        }
+    };
+    while(lexical_offset < lexical.size() || graph_offset < graph.size()) {
+        take(lexical, lexical_offset);
+        take(graph, graph_offset);
+    }
+    return selected;
+}
+
+bool searchApiTokenMatches(std::string_view authorization, std::string_view expected)
+{
+    constexpr std::string_view scheme = "bearer ";
+    if(expected.empty() || authorization.size() != scheme.size() + expected.size())
+        return false;
+    for(size_t i = 0; i < scheme.size(); ++i)
+        if(std::tolower(static_cast<unsigned char>(authorization[i])) != scheme[i])
+            return false;
+    // Do not short-circuit based on which secret byte differs.
+    volatile unsigned char difference = 0;
+    for(size_t i = 0; i < expected.size(); ++i)
+        difference = difference | static_cast<unsigned char>(authorization[scheme.size()+i] ^ expected[i]);
+    return difference == 0;
+}
+}
+
+Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto started = Clock::now();
+    const auto request_id = utils::getUuid();
+    auto respond = [&](HttpStatusCode status, nlohmann::json body) {
+        body["api_version"] = "1";
+        body["request_id"] = request_id;
+        auto response = HttpResponse::newHttpResponse();
+        response->setStatusCode(status);
+        response->setContentTypeCode(CT_APPLICATION_JSON);
+        response->addHeader("Cache-Control", "no-store");
+        response->addHeader("Vary", "Authorization");
+        response->setBody(body.dump());
+        return response;
+    };
+    auto error = [&](HttpStatusCode status, const char* code, const char* message) {
+        return respond(status, {{"error", {{"code",code},{"message",message}}}});
+    };
+    if(search_api_token.empty())
+        co_return error(k404NotFound, "not_found", "Not found");
+    if(!searchApiTokenMatches(req->getHeader("authorization"), search_api_token)) {
+        auto response = error(k401Unauthorized, "unauthorized", "A valid bearer token is required");
+        response->addHeader("WWW-Authenticate", "Bearer realm=\"search\"");
+        co_return response;
+    }
+
+    // Drogon has already URL-decoded parameters. Do not decode them twice.
+    const auto input = req->getParameter("param");
+    if(input.empty() || input.size() > 1024)
+        co_return error(k400BadRequest, "invalid_query", "param must contain 1 to 1024 bytes");
+    const auto requested_mode = req->getParameter("mode");
+    const auto mode = requested_mode.empty() ? std::string("search") : requested_mode;
+    if(mode != "search" && mode != "raw")
+        co_return error(k400BadRequest, "invalid_mode", "mode must be search or raw");
+    size_t limit = 10;
+    const auto requested_limit = req->getParameter("limit");
+    if(req->getParameters().find("limit") != req->getParameters().end()) {
+        const auto [end, ec] = std::from_chars(requested_limit.data(),
+            requested_limit.data()+requested_limit.size(), limit);
+        if(ec != std::errc{} || end != requested_limit.data()+requested_limit.size()
+           || limit == 0 || limit > fusion_candidate_limit+fusion_graph_candidate_limit)
+            co_return error(k400BadRequest, "invalid_limit", "limit must be an integer from 1 to 1250");
+    }
+    try { (void)nlohmann::json(input).dump(); }
+    catch(const nlohmann::json::exception&) {
+        co_return error(k400BadRequest, "invalid_query", "param must be valid UTF-8");
+    }
+    auto [query, filter] = parseSearchQuery(input);
+    std::transform(query.begin(), query.end(), query.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    if(query.empty())
+        co_return error(k400BadRequest, "invalid_query", "param must include searchable text");
+
+    tlgs::Counter counter(search_in_flight);
+    if(counter.count() > 64) {
+        auto response = error(k429TooManyRequests, "too_many_requests", "Search is busy; retry shortly");
+        response->addHeader("Retry-After", "1");
+        co_return response;
+    }
+    try {
+        const bool raw = mode == "raw";
+        RetrievalBatch batch;
+        std::shared_ptr<std::vector<RankedResult>> ranked;
+        if(raw) {
+            batch = co_await retrieveCandidates(query, filter);
+            // Small limits must sample both retrievers, including graph-only
+            // destinations, rather than exhausting BM25 before seeing Hilltop.
+            batch.candidates = interleaveRetrievalCandidates(std::move(batch.candidates));
+        }
+        else {
+            bool cache_hit;
+            ranked = co_await cachedSearch(query, filter, cache_hit);
+        }
+        const auto available = raw ? batch.candidates.size() : ranked->size();
+        const auto selected_count = std::min(limit, available);
+        auto urls = nlohmann::json::array();
+        for(size_t i = 0; i < selected_count; ++i)
+            urls.push_back(raw ? batch.candidates[i].result.url : (*ranked)[i].url);
+
+        auto result = nlohmann::json::array();
+        const auto metadata_started = Clock::now();
+        if(!urls.empty()) {
+            const auto rows = co_await fetchSearchPageData(query, urls, raw);
+            std::unordered_map<std::string,nlohmann::json> metadata;
+            for(const auto& row : rows) {
+                auto item = nlohmann::json{{"url",row["url"].as<std::string>()},
+                    {"title",row["bounded_title"].as<std::string>()},
+                    {"content_type",row["content_type"].isNull() ? "" : row["content_type"].as<std::string>()},
+                    {"size",row["size"].as<int64_t>()}};
+                if(raw) {
+                    item["document"] = {{"raw_content_hash",row["raw_hash"].as<std::string>()},
+                        {"indexed_content_hash",row["indexed_hash"].as<std::string>()},
+                        {"has_explicit_title",row["explicit_title"].as<bool>()},
+                        {"language",row["language"].as<std::string>()},
+                        {"headings",row["headings"].as<std::string>()},
+                        {"body",row["body"].as<std::string>()},
+                        {"link_text",row["link_text"].as<std::string>()},
+                        {"external_links",nlohmann::json::parse(row["external_links"].as<std::string>())},
+                        {"internal_links",nlohmann::json::parse(row["internal_links"].as<std::string>())},
+                        {"truncated",{{"title",row["title_truncated"].as<bool>()},
+                                      {"headings",row["headings_truncated"].as<bool>()},
+                                      {"body",row["body_truncated"].as<bool>()},
+                                      {"link_text",row["link_text_truncated"].as<bool>()},
+                                      {"external_links",row["external_links_truncated"].as<bool>()},
+                                      {"internal_links",row["internal_links_truncated"].as<bool>()}}}};
+                }
+                else {
+                    const auto page = makeSearchResult(row);
+                    item["title"] = page.title;
+                    item["snippet"] = page.preview;
+                }
+                metadata.emplace(item["url"].get<std::string>(), std::move(item));
+            }
+            for(size_t i = 0; i < selected_count; ++i) {
+                const auto& url = raw ? batch.candidates[i].result.url : (*ranked)[i].url;
+                const auto found = metadata.find(url);
+                if(found == metadata.end()) continue; // Page removed after retrieval.
+                auto item = std::move(found->second);
+                if(raw) {
+                    const auto& candidate = batch.candidates[i];
+                    item["site"] = candidate.result.logical_site;
+                    item["retrieval"] = {
+                        {"bm25",candidate.fts_rank ? nlohmann::json{
+                            {"score",candidate.bm25_score},{"rank",candidate.fts_rank}} : nlohmann::json(nullptr)},
+                        {"hilltop",candidate.graph_rank ? nlohmann::json{
+                            {"score",candidate.authority_score},{"rank",candidate.graph_rank},
+                            {"independent_sites",candidate.independent_sites}} : nlohmann::json(nullptr)},
+                        {"indexed_content_hash",candidate.indexed_content_hash}};
+                    item["document"]["matches_retrieval"] =
+                        !candidate.indexed_content_hash.empty()
+                        && item["document"]["indexed_content_hash"] == candidate.indexed_content_hash;
+                }
+                else item["rank"] = i+1;
+                result.push_back(std::move(item));
+            }
+        }
+        auto body = nlohmann::json{{"query",input},{"mode",mode},{"limit",limit},
+            {"available",available},{"returned",result.size()},{"results",std::move(result)},
+            {"took_ms",std::chrono::duration<double,std::milli>(Clock::now()-started).count()}};
+        if(raw) body["raw"] = {{"schema_version",1},{"query",query},
+            {"filters",serializeSearchFilter(filter)},
+            {"order","interleaved_bm25_hilltop"},
+            {"timings_ms",{{"bm25",batch.bm25_ms},{"hilltop",batch.hilltop_ms},
+                           {"retrieval",batch.total_ms},
+                           {"metadata",std::chrono::duration<double,std::milli>(Clock::now()-metadata_started).count()}}}};
+        co_return respond(k200OK, std::move(body));
+    }
+    catch(const std::exception& exception) {
+        LOG_ERROR << "Search API request " << request_id << " failed: " << exception.what();
+        co_return error(k500InternalServerError, "internal_error", "Search could not be completed");
+    }
+}
+
 Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 {
     using namespace std::chrono;
-    constexpr size_t cache_time = 600;
 
     // Hacky implementation of exponential backoff. We ask each request to wait
     // more and more until we processed something. Since we can't know how sent
@@ -1338,28 +1678,13 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         co_return resp;
     }
 
-    using RankedResults = std::vector<RankedResult>;
-
-    static CacheMap<SearchCacheKey, std::shared_ptr<RankedResults>> result_cache(app().getLoop(), 60);
     const auto requested_page = tlgs::try_strtoull(
         std::filesystem::path(req->path()).filename().generic_string()).value_or(1);
     const size_t current_page_idx = std::max<uint64_t>(requested_page, 1) - 1;
 
-    // A per-launch seeded hash prevents chosen-bucket attacks, while retaining
-    // the canonical input in the key makes hash collisions harmless.
-    const SearchCacheKey filtered_result_cache_key(query_str, filter);
-    std::string cache_status = "(fully cached)";
-
-    std::shared_ptr<RankedResults> filtered_result;
-    if(result_cache.findAndFetch(filtered_result_cache_key, filtered_result) == false) {
-        filtered_result = std::make_shared<RankedResults>(
-            co_await pageSearch(query_str, filter));
-        cache_status = "";
-        result_cache.insert(filtered_result_cache_key, filtered_result, cache_time);
-    }
-
-    if(filtered_result == nullptr)
-        throw std::runtime_error("filtered search result is nullptr");
+    bool cache_hit;
+    const auto filtered_result = co_await cachedSearch(query_str, filter, cache_hit);
+    const std::string cache_status = cache_hit ? "(fully cached)" : "";
 
     const auto result_count = filtered_result->size();
     const size_t offset = current_page_idx > result_count / search_results_per_page
@@ -1376,31 +1701,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     std::vector<SearchResult> search_result;
     if(!selected_urls.empty()) {
-        // PostgreSQL parses and marks the bounded text once. Choose the excerpt
-        // in C++ so partial matches do not require a second database text parse.
-        auto db = app().getDbClient();
-        auto page_data = co_await db->execSqlCoro(R"sql(
-            WITH headline_queries AS MATERIALIZED (
-                SELECT websearch_to_tsquery('english', $1) AS english_partial,
-                       websearch_to_tsquery('simple', $1) AS simple_partial
-            )
-            SELECT pages.url, pages.size, pages.title, pages.content_type,
-                   CASE WHEN pages.lang IS NULL
-                                  OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
-                        THEN ts_headline('english',
-                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
-                                         headline_queries.english_partial,
-                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"')
-                        ELSE ts_headline('simple',
-                                         translate(SUBSTRING(pages.content_body, 0, 5000), chr(30) || chr(31), ''),
-                                         headline_queries.simple_partial,
-                                         'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"') END AS preview,
-                   pages.last_crawl_success_at
-            FROM pages
-            JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
-              ON requested.url=pages.url
-            CROSS JOIN headline_queries
-        )sql", tlgs::highlightQuery(query_str), selected_urls.dump());
+        auto page_data = co_await fetchSearchPageData(query_str, selected_urls);
 
         std::unordered_map<std::string, size_t> result_idx;
         for(size_t i=0;i<page_data.size();i++) {
@@ -1416,21 +1717,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
             }
 
             const auto& page = page_data[it->second];
-            const auto last_crawled_at = page["last_crawl_success_at"].isNull()
-                ? "Never"
-                : trantor::Date::fromDbStringLocal(page["last_crawl_success_at"].as<std::string>())
-                    .toCustomFormattedString("%Y-%m-%d %H:%M:%S", false);
-            SearchResult res {
-                .url = item.url,
-                .title = page["title"].as<std::string>(),
-                .content_type = page["content_type"].as<std::string>(),
-                .preview = tlgs::highlightSnippet(page["preview"].as<std::string>()),
-                .last_crawled_at = last_crawled_at,
-                .size = page["size"].as<uint64_t>(),
-                .score = item.score
-            };
-            if(res.preview.empty())
-                res.preview = "No preview provided";
+            auto res = makeSearchResult(page, item.score);
             search_result.emplace_back(std::move(res));
         }
     }
