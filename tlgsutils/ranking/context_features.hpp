@@ -1,5 +1,6 @@
 #pragma once
 #include "features.hpp"
+#include <functional>
 #include <unordered_map>
 namespace tlgs::ranking
 {
@@ -167,6 +168,8 @@ struct CorpusStatistics
 };
 // Lowercase Unicode letter/number tokens, matching the original lexical scorer.
 std::vector<std::string> context_terms(const std::string &text);
+// Views are valid only during the callback.
+void visit_context_terms(std::string text, const std::function<void(std::string_view)> &visitor);
 std::vector<std::string> context_url_terms(const std::string &url);
 // Contexts correspond to items, capped at64 distinct texts by the refresh tool.
 std::vector<float> context_features(const std::string &query, const std::vector<Page> &items,

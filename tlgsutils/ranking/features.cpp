@@ -460,12 +460,33 @@ std::vector<float> features(const std::string &query, const std::vector<Page> &i
     }
     return result;
 }
-std::vector<std::string> context_terms(const std::string &text)
+template <class Text, class Visitor> static void visitContextTerms(Text &&text, const Visitor &visitor)
 {
+    if (ascii(text))
+    {
+        std::string lower = std::forward<Text>(text);
+        const std::string_view view(lower);
+        size_t start = 0;
+        for (size_t i = 0; i < lower.size(); ++i)
+        {
+            auto &c = lower[i];
+            if (c >= 'A' && c <= 'Z')
+                c += 'a' - 'A';
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+            {
+                if (i > start)
+                    visitor(view.substr(start, i - start));
+                start = i + 1;
+            }
+        }
+        if (start < lower.size())
+            visitor(view.substr(start));
+        return;
+    }
     auto u = unicode(text);
     u.toLower(icu::Locale::getRoot());
     const auto lower = utf8(u);
-    Words result;
+    const std::string_view view(lower);
     int32_t start = 0;
     for (int32_t i = 0; i < static_cast<int32_t>(lower.size());)
     {
@@ -475,23 +496,32 @@ std::vector<std::string> context_terms(const std::string &text)
         if (!alnum(c))
         {
             if (at > start)
-                result.push_back(lower.substr(start, at - start));
+                visitor(view.substr(start, at - start));
             start = i;
         }
     }
     if (start < static_cast<int32_t>(lower.size()))
-        result.push_back(lower.substr(start));
+        visitor(view.substr(start));
+}
+
+void visit_context_terms(std::string text, const std::function<void(std::string_view)> &visitor)
+{
+    visitContextTerms(std::move(text), visitor);
+}
+
+std::vector<std::string> context_terms(const std::string &text)
+{
+    Words result;
+    visitContextTerms(text, [&](std::string_view term) { result.emplace_back(term); });
     return result;
 }
 
-std::vector<std::string> context_url_terms(const std::string& text)
+std::vector<std::string> context_url_terms(const std::string &text)
 {
     const Url url(text, false);
     return context_terms(url.authority() + " " + unquote(url.path()));
 }
 
-namespace
-{
 enum ContextField : size_t
 {
     TitleField,
@@ -587,7 +617,7 @@ struct ComponentField
     std::string_view name;
     double Components::*member;
 };
-constexpr std::array<ComponentField, 8> component_fields = {
+static constexpr std::array<ComponentField, 8> component_fields = {
     {ComponentField{"bm25", &Components::bm25},
      {"flags", &Components::flags},
      {"phrase", &Components::phrase},
@@ -908,7 +938,6 @@ static ContextValues contextFeatureRow(const ContextQuery &query, const Page &pa
     storeAnchorFeatures(values, query, evidence, incoming.size());
     return values;
 }
-} // namespace
 
 std::vector<float> context_features(const std::string &query, const std::vector<Page> &items,
                                     const std::vector<std::vector<IncomingContext>> &incoming,

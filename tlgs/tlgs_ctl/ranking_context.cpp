@@ -1,15 +1,27 @@
 #include "ranking_context.hpp"
+#include <chrono>
 #include <drogon/drogon.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <tlgsutils/ranking/context_features.hpp>
 #include <unordered_map>
-#include <unordered_set>
 
 using namespace drogon;
 
 Task<> rebuildRankingContext(bool dry_run, int *exit_status)
 {
+    struct TermHash
+    {
+        using is_transparent = void;
+        size_t operator()(std::string_view term) const { return std::hash<std::string_view>{}(term); }
+    };
+    struct TermFrequency
+    {
+        size_t documents = 0;
+        // Deduplicate across fields without allocating a separate set per page.
+        size_t last_document = 0;
+    };
+
     std::shared_ptr<orm::Transaction> transaction;
     try
     {
@@ -29,6 +41,7 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
             throw std::runtime_error("no active site identity ruleset");
         const auto ruleset = state[0]["active_ruleset_id"].as<int64_t>();
         const auto snapshot = state[0]["snapshot_at"].as<std::string>();
+        const auto context_started = std::chrono::steady_clock::now();
         // Keep incoming text in PostgreSQL and stream pages in bounded batches.
         co_await transaction->execSqlCoro(R"sql(
             CREATE TEMP TABLE ranking_context_build ON COMMIT DROP AS
@@ -43,7 +56,8 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
             )
             SELECT target_url AS url,
                 jsonb_agg(jsonb_build_array(qualifying_text,support)
-                          ORDER BY support DESC,qualifying_text) AS contexts
+                          ORDER BY support DESC,qualifying_text) AS contexts,
+                string_agg(qualifying_text,E'\n' ORDER BY support DESC,qualifying_text) AS search_text
             FROM ranked WHERE rank<=64 GROUP BY target_url
         )sql",
                                           ruleset);
@@ -56,39 +70,50 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
             SELECT p.url,CASE WHEN p.has_explicit_title THEN coalesce(p.title,'') ELSE '' END AS title,
                 coalesce(p.search_headings,'') AS headings,
                 coalesce(p.search_link_text,'') AS link_text,coalesce(p.content_body,'') AS body,
-                coalesce(c.contexts,'[]'::jsonb)::text AS contexts
+                coalesce(c.search_text,'') AS incoming_text
             FROM pages p LEFT JOIN ranking_context_build c ON c.url=p.url
         )sql");
-        std::unordered_map<std::string, size_t> frequency;
+        const auto scan_started = std::chrono::steady_clock::now();
+        double fetch_seconds = 0;
+        std::unordered_map<std::string, TermFrequency, TermHash, std::equal_to<>> frequency;
         size_t documents = 0;
         for (;;)
         {
+            const auto fetch_started = std::chrono::steady_clock::now();
             const auto pages = co_await transaction->execSqlCoro("FETCH 256 FROM ranking_pages");
+            fetch_seconds +=
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - fetch_started).count();
             if (pages.empty())
                 break;
             for (const auto &page : pages)
             {
-                std::unordered_set<std::string> terms;
-                const auto add = [&](const std::string &text)
+                const auto count = [&](std::string_view term)
                 {
-                    for (auto &term : tlgs::ranking::context_terms(text))
-                        terms.insert(std::move(term));
+                    auto entry = frequency.find(term);
+                    if (entry == frequency.end())
+                        entry = frequency.emplace(term, TermFrequency{}).first;
+                    auto &value = entry->second;
+                    if (value.last_document != documents + 1)
+                    {
+                        ++value.documents;
+                        value.last_document = documents + 1;
+                    }
                 };
-                for (const auto *column : {"title", "headings", "link_text", "body"})
-                    add(page[column].as<std::string>());
-                for (auto &term : tlgs::ranking::context_url_terms(page["url"].as<std::string>()))
-                    terms.insert(std::move(term));
-                const auto contexts = nlohmann::json::parse(page["contexts"].as<std::string>());
-                for (const auto &context : contexts)
-                    add(context.at(0).get<std::string>());
-                for (const auto &term : terms)
-                    ++frequency[term];
+                for (const auto *column : {"title", "headings", "link_text", "body", "incoming_text"})
+                    tlgs::ranking::visit_context_terms(page[column].as<std::string>(), count);
+                for (const auto &term : tlgs::ranking::context_url_terms(page["url"].as<std::string>()))
+                    count(term);
                 ++documents;
             }
             if (documents % 25600 == 0)
                 std::cout << "Ranking context: scanned " << documents << " pages\n";
         }
         co_await transaction->execSqlCoro("CLOSE ranking_pages");
+        const auto scan_finished = std::chrono::steady_clock::now();
+        std::cout << "Ranking context timing: contexts "
+                  << std::chrono::duration<double>(scan_started - context_started).count() << "s, scan "
+                  << std::chrono::duration<double>(scan_finished - scan_started).count() << "s (fetch "
+                  << fetch_seconds << "s)\n";
         if (!documents)
             throw std::runtime_error("cannot build ranking context for an empty corpus");
         if (dry_run)
@@ -126,7 +151,7 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
         )sql");
         co_await transaction->execSqlCoro(R"sql(
             CREATE TABLE IF NOT EXISTS ranking_term_frequency (
-                term text PRIMARY KEY, documents bigint NOT NULL CHECK(documents>=0))
+                term text NOT NULL, documents bigint NOT NULL CHECK(documents>=0))
         )sql");
         co_await transaction->execSqlCoro(R"sql(
             CREATE TABLE IF NOT EXISTS ranking_incoming_context (
@@ -147,6 +172,12 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
         if (!newer.empty())
             throw std::runtime_error("a newer ranking snapshot is already installed");
         co_await transaction->execSqlCoro("DELETE FROM ranking_term_frequency");
+        // Tokens can exceed B-tree's index-entry limit. Equality lookups use a
+        // hash index instead; the frequency map supplies one row per full term.
+        co_await transaction->execSqlCoro("ALTER TABLE ranking_term_frequency "
+                                          "DROP CONSTRAINT IF EXISTS ranking_term_frequency_pkey");
+        co_await transaction->execSqlCoro("CREATE INDEX IF NOT EXISTS ranking_term_frequency_term_hash "
+                                          "ON ranking_term_frequency USING hash(term)");
         co_await transaction->execSqlCoro("DELETE FROM ranking_incoming_context");
         co_await transaction->execSqlCoro("DELETE FROM ranking_context_state");
         nlohmann::json batch = nlohmann::json::array();
@@ -162,7 +193,7 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
         };
         for (const auto &[term, count] : frequency)
         {
-            batch.push_back({{"term", term}, {"documents", count}});
+            batch.push_back({{"term", term}, {"documents", count.documents}});
             if (batch.size() == 2000)
                 co_await insert();
         }
