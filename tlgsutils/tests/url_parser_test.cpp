@@ -131,3 +131,11 @@ DROGON_TEST(UrlParserTest)
     url = tlgs::Url("http://gemini://example.com");
     CHECK(url.good() == false);
 }
+
+DROGON_TEST(UrlAuthority)
+{
+    CHECK(tlgs::Url("gemini://example.com/path", false).authority() == "example.com");
+    CHECK(tlgs::Url("gemini://example.com:1965/path", false).authority() == "example.com:1965");
+    CHECK(tlgs::Url("gemini://example.com:1966/path", false).authority() == "example.com:1966");
+    CHECK(tlgs::Url("gemini://EXAMPLE.com/a/../b", false).path() == "/a/../b");
+}

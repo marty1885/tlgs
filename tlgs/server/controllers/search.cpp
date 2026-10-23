@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <charconv>
 #include <drogon/HttpController.h>
 #include <drogon/utils/coroutine.h>
 #include <drogon/HttpAppFramework.h>
@@ -21,17 +20,34 @@
 #include <xxhash.h>
 
 #include "search_result.hpp"
+#include <tlgsutils/ranking/types.hpp>
+#ifdef TLGS_ENABLE_LEARNED_RANKING
+#include <tlgsutils/ranking/features.hpp>
+#include "ranking/model.hpp"
+#endif
 
 using namespace drogon;
 
-namespace
+namespace tlgs::ranking
 {
-constexpr size_t search_results_per_page = 10;
-constexpr size_t fusion_candidate_limit = 1000;
-constexpr size_t fusion_bm25_candidate_limit = 5000;
-constexpr size_t fusion_max_site_candidates = 20;
-constexpr size_t fusion_graph_candidate_limit = 250;
-constexpr double fusion_rrf_constant = 60.0;
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RetrievalScore, rank, score)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AuthorityScore, rank, score, independent_sites)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TruncatedFields, title, headings, body, link_text, external_links, internal_links)
+
+static void to_json(nlohmann::json& json, const RetrievalSignals& signals)
+{
+    json = {{"bm25", signals.bm25 ? nlohmann::json(*signals.bm25) : nlohmann::json(nullptr)},
+            {"hilltop", signals.hilltop ? nlohmann::json(*signals.hilltop) : nlohmann::json(nullptr)}};
+}
+} // namespace tlgs::ranking
+
+
+static constexpr size_t search_results_per_page = 10;
+static constexpr size_t fusion_candidate_limit = 1000;
+static constexpr size_t fusion_bm25_candidate_limit = 5000;
+static constexpr size_t fusion_max_site_candidates = 20;
+static constexpr size_t fusion_graph_candidate_limit = 250;
+static constexpr double fusion_rrf_constant = 60.0;
 
 struct TimedSqlResult
 {
@@ -40,7 +56,7 @@ struct TimedSqlResult
 };
 
 template<typename QueryFactory>
-Task<TimedSqlResult> executeTimed(QueryFactory query_factory)
+static Task<TimedSqlResult> executeTimed(QueryFactory query_factory)
 {
     const auto started = std::chrono::steady_clock::now();
     auto rows = co_await query_factory();
@@ -49,7 +65,6 @@ Task<TimedSqlResult> executeTimed(QueryFactory query_factory)
         .duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started)
     };
-}
 }
 
 struct RankedResult
@@ -84,16 +99,22 @@ struct RetrievalBatch
 
 struct SearchFilter;
 
+enum class RankingAlgorithm { HITS, SALSA, FUSION, LEARNED };
+
+static std::string_view rankingName(RankingAlgorithm ranking)
+{
+    switch (ranking) {
+    case RankingAlgorithm::HITS: return "hits";
+    case RankingAlgorithm::SALSA: return "salsa";
+    case RankingAlgorithm::FUSION: return "fusion";
+    case RankingAlgorithm::LEARNED: return "learned";
+    }
+    throw std::logic_error("Unknown ranking algorithm");
+}
+
 struct SearchController : public HttpController<SearchController>
 {
 public:
-    enum class RankingAlgorithm
-    {
-        HITS,
-        SALSA,
-        FUSION
-    };
-
     SearchController();
     Task<HttpResponsePtr> tlgs_search(HttpRequestPtr req);
     Task<HttpResponsePtr> search_api(HttpRequestPtr req);
@@ -103,6 +124,12 @@ public:
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(SearchController::search_api, "/api/v1/search", {Get});
+    ADD_METHOD_TO(SearchController::tlgs_search, "/search/no_ml", {Get});
+    ADD_METHOD_TO(SearchController::tlgs_search, "/search/no_ml/{page}", {Get});
+    ADD_METHOD_TO(SearchController::tlgs_search, "/v/search/no_ml", {Get});
+    ADD_METHOD_TO(SearchController::tlgs_search, "/v/search/no_ml/{page}", {Get});
+    ADD_METHOD_TO(SearchController::jump_search, "/search/no_ml/jump/{search_term}", {Get});
+    ADD_METHOD_TO(SearchController::jump_search, "/v/search/no_ml/jump/{search_term}", {Get});
     ADD_METHOD_TO(SearchController::tlgs_search, "/search", {Get});
     ADD_METHOD_TO(SearchController::tlgs_search, "/search/{page}", {Get});
     ADD_METHOD_TO(SearchController::jump_search, "/search_jump/{search_term}", {Get});
@@ -114,13 +141,22 @@ public:
 
 
     Task<std::vector<RankedResult>> pageSearch(
-        const std::string& query_str, const SearchFilter& filter);
+        const std::string& query_str, const SearchFilter& filter, RankingAlgorithm ranking);
     Task<std::vector<RankedResult>> fusionSearch(
         const std::string& query_str, const SearchFilter& filter);
     Task<std::shared_ptr<std::vector<RankedResult>>> cachedSearch(
-        const std::string& query, const SearchFilter& filter, bool& cache_hit);
+        const std::string& query, const SearchFilter& filter, bool& cache_hit,
+        RankingAlgorithm ranking);
     Task<RetrievalBatch> retrieveCandidates(
         const std::string& query_str, const SearchFilter& filter);
+    Task<std::vector<RankedResult>> learnedSearch(
+        const std::string& query, const SearchFilter& filter);
+    RankingAlgorithm rankingForSearch(bool traditional) const
+    {
+        return traditional && ranking_algorithm == RankingAlgorithm::LEARNED
+            ? RankingAlgorithm::FUSION : ranking_algorithm;
+    }
+
     std::string search_api_token;
     std::atomic<size_t> search_in_flight{0};
     RankingAlgorithm ranking_algorithm = RankingAlgorithm::FUSION;
@@ -129,7 +165,7 @@ public:
     size_t fusion_max_site_results_per_page = 2;
 };
 
-auto sanitizeGemini(std::string preview) -> std::string {
+static auto sanitizeGemini(std::string preview) -> std::string {
     utils::replaceAll(preview, "\n", " ");
     utils::replaceAll(preview, "\t", " ");
     utils::replaceAll(preview, "```", " ");
@@ -171,9 +207,13 @@ struct SearchFilter
     }
 };
 
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FilterConstrant, value, negate)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SizeConstrant, size, greater)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchFilter, content_type, domain, size, title)
+
 struct SearchCacheKey
 {
-    SearchCacheKey(const std::string& query, const SearchFilter& filter);
+    SearchCacheKey(const std::string& query, const SearchFilter& filter, RankingAlgorithm ranking);
 
     uint64_t hash;
     std::string canonical;
@@ -198,9 +238,10 @@ struct hash<SearchCacheKey>
 };
 }
 
-std::optional<size_t> parseSizeUnits(std::string unit)
+static std::optional<size_t> parseSizeUnits(std::string unit)
 {
-    std::transform(unit.begin(), unit.end(), unit.begin(), ::tolower);
+    std::transform(unit.begin(), unit.end(), unit.begin(),
+        [](unsigned char c) { return std::tolower(c); });
     if(unit.size() > 1 && unit.back() == 'b')
         unit.pop_back();
 
@@ -222,7 +263,7 @@ std::optional<size_t> parseSizeUnits(std::string unit)
         return {};
 }
 
-std::optional<size_t> parseSizeValue(const std::string& number, const size_t unit)
+static std::optional<size_t> parseSizeValue(const std::string& number, const size_t unit)
 {
     errno = 0;
     char* end = nullptr;
@@ -241,7 +282,7 @@ std::optional<size_t> parseSizeValue(const std::string& number, const size_t uni
     return static_cast<size_t>(scaled);
 }
 
-std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
+static std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
 {
     std::pair<std::string, std::string> result;
     auto words = utils::splitString(query, " ");
@@ -334,35 +375,18 @@ std::pair<std::string, SearchFilter> parseSearchQuery(const std::string& query)
     return {search_query, filter};
 }
 
-nlohmann::json serializeSearchFilter(const SearchFilter& filter)
-{
-    nlohmann::json result = {
-        {"content_type", nlohmann::json::array()},
-        {"domain", nlohmann::json::array()},
-        {"size", nlohmann::json::array()},
-        {"title", nlohmann::json::array()}
-    };
-    for(const auto& item : filter.content_type)
-        result["content_type"].push_back({{"value", item.value}, {"negate", item.negate}});
-    for(const auto& item : filter.domain)
-        result["domain"].push_back({{"value", item.value}, {"negate", item.negate}});
-    for(const auto& item : filter.size)
-        result["size"].push_back({{"size", item.size}, {"greater", item.greater}});
-    for(const auto& item : filter.title)
-        result["title"].push_back({{"value", item.value}, {"negate", item.negate}});
-    return result;
-}
-
-SearchCacheKey::SearchCacheKey(const std::string& query, const SearchFilter& filter)
+SearchCacheKey::SearchCacheKey(const std::string& query, const SearchFilter& filter, RankingAlgorithm ranking)
 {
     static const uint64_t seed = [] {
         std::random_device random;
         return (static_cast<uint64_t>(random()) << 32) ^ random();
     }();
 
-    canonical = query;
+    canonical = rankingName(ranking);
     canonical.push_back('\0');
-    canonical += serializeSearchFilter(filter).dump();
+    canonical += query;
+    canonical.push_back('\0');
+    canonical += nlohmann::json(filter).dump();
     hash = XXH3_64bits_withSeed(canonical.data(), canonical.size(), seed);
 }
 
@@ -373,7 +397,7 @@ SearchCacheKey::SearchCacheKey(const std::string& query, const SearchFilter& fil
  * @param out_neighbous ector of vector where out_neighbous[i] is all outbound links of node i
  * @return std::vector<double> The score of each node
  */
-std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbous, const std::vector<std::vector<size_t>>& out_neighbous)
+static std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbous, const std::vector<std::vector<size_t>>& out_neighbous)
 {
     // The HITS algorithm
     size_t node_count = in_neighbous.size();
@@ -436,7 +460,7 @@ std::vector<double> hitsRank(const std::vector<std::vector<size_t>>& in_neighbou
  * @return std::vector<double> The score of each node
  * @note in_neighbous and out_neighbous will be modified to become a biparte graph
  */
-std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, std::vector<std::vector<size_t>>& out_neighbous)
+static std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, std::vector<std::vector<size_t>>& out_neighbous)
 {
     size_t node_count = in_neighbous.size();
     assert(node_count == out_neighbous.size());
@@ -534,7 +558,7 @@ std::vector<double> salsaRank(std::vector<std::vector<size_t>>& in_neighbous, st
     return score;
 }
 
-std::vector<RankedResult> deduplicateRankedResults(
+static std::vector<RankedResult> deduplicateRankedResults(
     std::vector<RankedResult>& nodes,
     const std::span<const unsigned char> roots,
     const std::string_view query)
@@ -560,7 +584,8 @@ std::vector<RankedResult> deduplicateRankedResults(
 
         auto to_lower = [](const std::string& str) {
             std::string ret = str;
-            std::transform(ret.begin(), ret.end(), ret.begin(), ::tolower);
+            std::transform(ret.begin(), ret.end(), ret.begin(),
+                [](unsigned char c) { return std::tolower(c); });
             return ret;
         };
         tlgs::Url node_url(node.url);
@@ -617,7 +642,7 @@ std::vector<RankedResult> deduplicateRankedResults(
     return results;
 }
 
-std::vector<RankedResult> crowdResultPages(
+static std::vector<RankedResult> crowdResultPages(
     std::vector<RankedResult> pending,
     const size_t page_size,
     const size_t max_per_site)
@@ -683,6 +708,13 @@ SearchController::SearchController()
                 ranking_algorithm = RankingAlgorithm::HITS;
             else if(algo == "salsa")
                 ranking_algorithm = RankingAlgorithm::SALSA;
+            else if(algo == "learned") {
+#ifdef TLGS_ENABLE_LEARNED_RANKING
+                ranking_algorithm = RankingAlgorithm::LEARNED;
+#else
+                throw std::invalid_argument("learned ranking was not enabled at build time");
+#endif
+            }
             else if(algo == "fusion")
                 ranking_algorithm = RankingAlgorithm::FUSION;
             else
@@ -733,7 +765,10 @@ SearchController::SearchController()
             LOG_WARN << "fusion_max_site_results_per_page must be between 0 and 10; using 2";
     }
 
-    if(ranking_algorithm == RankingAlgorithm::FUSION) {
+    if(ranking_algorithm == RankingAlgorithm::LEARNED) {
+        LOG_INFO << "Search ranking: learned (visiblebody111 Highway model)";
+    }
+    else if(ranking_algorithm == RankingAlgorithm::FUSION) {
         LOG_INFO << "Search ranking: fusion (graph weight " << fusion_graph_weight
                  << ", site decay " << fusion_site_decay
                  << ", per-page site cap " << fusion_max_site_results_per_page << ')';
@@ -752,7 +787,7 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
     using Clock = std::chrono::steady_clock;
     const auto search_started = Clock::now();
     auto db = app().getDbClient();
-    const auto filter_json = serializeSearchFilter(filter).dump();
+    const auto filter_json = nlohmann::json(filter).dump();
     auto fts_task = executeTimed(
         [db, query_str, filter_json, filter_empty=filter.empty(),
          site_candidate_limit=std::any_of(filter.domain.begin(), filter.domain.end(),
@@ -1109,18 +1144,16 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
     };
 }
 
-Task<std::vector<RankedResult>> SearchController::fusionSearch(
-    const std::string& query_str, const SearchFilter& filter)
+// Shared production ordering for both fusion results and the learned shortlist.
+static void rankFusionCandidates(std::vector<RetrievalCandidate>& candidates,
+                          double graph_weight, double site_decay)
 {
-    auto batch = co_await retrieveCandidates(query_str, filter);
-    auto& candidates = batch.candidates;
-    const auto fusion_started = std::chrono::steady_clock::now();
     for(auto& candidate : candidates) {
         if(candidate.fts_rank != 0)
             candidate.fused_score += 1.0 /
                 (fusion_rrf_constant + candidate.fts_rank);
         if(candidate.graph_rank != 0)
-            candidate.fused_score += fusion_graph_weight /
+            candidate.fused_score += graph_weight /
                 (fusion_rrf_constant + candidate.graph_rank);
     }
 
@@ -1131,35 +1164,63 @@ Task<std::vector<RankedResult>> SearchController::fusionSearch(
     });
 
     std::unordered_map<std::string, size_t> site_ranks;
-    std::vector<RankedResult> results;
-    results.reserve(candidates.size());
     for(auto& candidate : candidates) {
         const auto site_rank = ++site_ranks[candidate.result.logical_site];
         candidate.result.score = candidate.fused_score /
-            (1.0 + fusion_site_decay * (site_rank - 1));
-        results.emplace_back(std::move(candidate.result));
+            (1.0 + site_decay * (site_rank - 1));
     }
-    std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) {
-        if(lhs.score != rhs.score)
-            return lhs.score > rhs.score;
-        return lhs.url < rhs.url;
+    std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+        if(lhs.result.score != rhs.result.score)
+            return lhs.result.score > rhs.result.score;
+        return lhs.result.url < rhs.result.url;
     });
+}
 
+static tlgs::ranking::RetrievalSignals retrievalSignals(const RetrievalCandidate& candidate)
+{
+    tlgs::ranking::RetrievalSignals signals;
+    if (candidate.fts_rank)
+        signals.bm25 = tlgs::ranking::RetrievalScore{candidate.fts_rank, candidate.bm25_score};
+    if (candidate.graph_rank)
+        signals.hilltop = tlgs::ranking::AuthorityScore{{candidate.graph_rank, candidate.authority_score}, candidate.independent_sites};
+    return signals;
+}
+
+
+static std::vector<RankedResult> finishFusionResults(
+    std::vector<RetrievalCandidate> candidates, const std::string& query, size_t max_site_results)
+{
+    std::vector<RankedResult> results;
+    results.reserve(candidates.size());
+    for (auto& candidate : candidates)
+        results.push_back(std::move(candidate.result));
+    auto deduplicated = deduplicateRankedResults(
+        results, std::span<const unsigned char>{}, query);
+    return crowdResultPages(std::move(deduplicated), search_results_per_page, max_site_results);
+}
+
+Task<std::vector<RankedResult>> SearchController::fusionSearch(
+    const std::string& query_str, const SearchFilter& filter)
+{
+    auto batch = co_await retrieveCandidates(query_str, filter);
+    auto& candidates = batch.candidates;
+    const auto fusion_started = std::chrono::steady_clock::now();
+    rankFusionCandidates(candidates, fusion_graph_weight, fusion_site_decay);
     LOG_DEBUG << "Fusion search timings: retrieval " << batch.total_ms
               << "ms (BM25 " << batch.bm25_ms << "ms, Hilltop " << batch.hilltop_ms
               << "ms), fusion " << std::chrono::duration<double,std::milli>(
                      std::chrono::steady_clock::now()-fusion_started).count() << "ms";
 
-    auto deduplicated = deduplicateRankedResults(
-        results, std::span<const unsigned char>{}, query_str);
-    co_return crowdResultPages(
-        std::move(deduplicated), search_results_per_page, fusion_max_site_results_per_page);
+    co_return finishFusionResults(std::move(candidates), query_str,
+                                  fusion_max_site_results_per_page);
 }
 
 Task<std::vector<RankedResult>> SearchController::pageSearch(
-    const std::string& query_str, const SearchFilter& filter)
+    const std::string& query_str, const SearchFilter& filter, RankingAlgorithm ranking)
 {
-    if(ranking_algorithm == RankingAlgorithm::FUSION)
+    if(ranking == RankingAlgorithm::LEARNED)
+        co_return co_await learnedSearch(query_str, filter);
+    if(ranking == RankingAlgorithm::FUSION)
         co_return co_await fusionSearch(query_str, filter);
     auto sql_start = std::chrono::high_resolution_clock::now();
     auto db = app().getDbClient();
@@ -1315,7 +1376,7 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
     }
 
     std::vector<double> score;
-    if(ranking_algorithm == RankingAlgorithm::HITS)
+    if(ranking == RankingAlgorithm::HITS)
         score = hitsRank(in_neighbous, out_neighbous);
     else
         score = salsaRank(in_neighbous, out_neighbous);
@@ -1346,24 +1407,22 @@ Task<std::vector<RankedResult>> SearchController::pageSearch(
 }
 
 Task<std::shared_ptr<std::vector<RankedResult>>> SearchController::cachedSearch(
-    const std::string& query, const SearchFilter& filter, bool& cache_hit)
+    const std::string& query, const SearchFilter& filter, bool& cache_hit, RankingAlgorithm ranking)
 {
     using RankedResults = std::vector<RankedResult>;
     static CacheMap<SearchCacheKey, std::shared_ptr<RankedResults>> cache(app().getLoop(), 60);
-    const SearchCacheKey key(query, filter);
+    const SearchCacheKey key(query, filter, ranking);
     std::shared_ptr<RankedResults> results;
     cache_hit = cache.findAndFetch(key, results);
     if(!cache_hit) {
-        results = std::make_shared<RankedResults>(co_await pageSearch(query, filter));
+        results = std::make_shared<RankedResults>(co_await pageSearch(query, filter, ranking));
         cache.insert(key, results, 600);
     }
     if(!results) throw std::runtime_error("cached search result is nullptr");
     co_return results;
 }
 
-namespace
-{
-SearchResult makeSearchResult(const orm::Row& page, double score = 0)
+static SearchResult makeSearchResult(const orm::Row& page, double score = 0)
 {
     const auto last_crawled_at = page["last_crawl_success_at"].isNull()
         ? "Never"
@@ -1385,9 +1444,13 @@ SearchResult makeSearchResult(const orm::Row& page, double score = 0)
 
 // Both renderers fetch page data here. Raw mode adds bounded indexed fields;
 // ordinary search computes the same query-aware preview for Gemini and JSON.
-Task<orm::Result> fetchSearchPageData(
-    const std::string& query, const nlohmann::json& urls, bool raw = false)
+enum class PageDataMode { Rendered, Raw, Ranking };
+
+static Task<orm::Result> fetchSearchPageData(
+    const std::string& query, const std::vector<std::string>& urls,
+    PageDataMode mode = PageDataMode::Rendered)
 {
+    const bool raw = mode != PageDataMode::Rendered;
     co_return co_await app().getDbClient()->execSqlCoro(R"sql(
             WITH headline_queries AS MATERIALIZED (
                 SELECT websearch_to_tsquery('english', $1) AS english_partial,
@@ -1424,17 +1487,247 @@ Task<orm::Result> fetchSearchPageData(
                    CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(internal_links::jsonb)='array'
                                 THEN jsonb_array_length(internal_links::jsonb)>200
                                 ELSE false END END AS internal_links_truncated,
-                   CASE WHEN $3::boolean THEN jsonb_path_query_array(coalesce(cross_site_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS external_links,
-                   CASE WHEN $3::boolean THEN jsonb_path_query_array(coalesce(internal_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS internal_links
+                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(cross_site_links::jsonb)='array'
+                                THEN least(jsonb_array_length(cross_site_links::jsonb),200)
+                                ELSE 0 END END AS external_link_count,
+                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(internal_links::jsonb)='array'
+                                THEN least(jsonb_array_length(internal_links::jsonb),200)
+                                ELSE 0 END END AS internal_link_count,
+                   CASE WHEN $4::boolean THEN jsonb_path_query_array(coalesce(cross_site_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS external_links,
+                   CASE WHEN $4::boolean THEN jsonb_path_query_array(coalesce(internal_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS internal_links
             FROM pages
             JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
               ON requested.url=pages.url
             CROSS JOIN headline_queries
         )sql",
-        tlgs::highlightQuery(query), urls.dump(), raw);
+        tlgs::highlightQuery(query), nlohmann::json(urls).dump(), raw, mode == PageDataMode::Raw);
 }
 
-std::vector<RetrievalCandidate> interleaveRetrievalCandidates(
+static tlgs::ranking::Document readSearchDocument(const orm::Row& row)
+{
+    return {
+        .raw_content_hash = row["raw_hash"].as<std::string>(),
+        .indexed_content_hash = row["indexed_hash"].as<std::string>(),
+        .language = row["language"].as<std::string>(),
+        .headings = row["headings"].as<std::string>(),
+        .body = row["body"].as<std::string>(),
+        .link_text = row["link_text"].as<std::string>(),
+        .has_explicit_title = row["explicit_title"].as<bool>(),
+        .truncated = {
+            .title = row["title_truncated"].as<bool>(),
+            .headings = row["headings_truncated"].as<bool>(),
+            .body = row["body_truncated"].as<bool>(),
+            .link_text = row["link_text_truncated"].as<bool>(),
+            .external_links = row["external_links_truncated"].as<bool>(),
+            .internal_links = row["internal_links_truncated"].as<bool>()},
+        .external_link_count = row["external_link_count"].as<size_t>(),
+        .internal_link_count = row["internal_link_count"].as<size_t>()};
+}
+
+static tlgs::ranking::Page readRankingPage(const orm::Row& row)
+{
+    return {.url = row["url"].as<std::string>(),
+            .title = row["bounded_title"].as<std::string>(),
+            .size = row["size"].as<int64_t>(),
+            .document = readSearchDocument(row)};
+}
+
+// Select the first 100 fusion-ranked candidates with distinct indexed content.
+static std::vector<RetrievalCandidate> selectRerankingCandidates(const std::vector<RetrievalCandidate>& candidates)
+{
+    constexpr size_t rerank_limit = 100;
+    std::unordered_set<std::string> selected_hashes;
+    std::vector<RetrievalCandidate> shortlist;
+    shortlist.reserve(std::min(rerank_limit, candidates.size()));
+    for (const auto &candidate : candidates)
+    {
+        const auto &key = candidate.indexed_content_hash.empty() ? candidate.result.url
+                                                                : candidate.indexed_content_hash;
+        if (!selected_hashes.insert(key).second)
+            continue;
+        shortlist.push_back(candidate);
+        if (shortlist.size() == rerank_limit)
+            break;
+    }
+    return shortlist;
+}
+
+static std::vector<RankedResult> orderLTRResults(
+    std::vector<RetrievalCandidate> candidates, std::span<const float> scores)
+{
+    std::vector<size_t> order(candidates.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](size_t a, size_t b)
+              {
+                  if (scores[a] != scores[b])
+                      return scores[a] > scores[b];
+                  const auto &left = candidates[a];
+                  const auto &right = candidates[b];
+                  const auto left_rank = left.fts_rank ? left.fts_rank : std::numeric_limits<size_t>::max();
+                  const auto right_rank = right.fts_rank ? right.fts_rank : std::numeric_limits<size_t>::max();
+                  if (left_rank != right_rank)
+                      return left_rank < right_rank;
+                  return left.result.url < right.result.url;
+              });
+    // The shortlist is already deduplicated; prefer two results per site.
+    std::unordered_map<std::string, size_t> sites;
+    std::vector<RankedResult> results, deferred;
+    results.reserve(candidates.size());
+    for (auto index : order)
+    {
+        auto &candidate = candidates[index];
+        candidate.result.score = scores[index];
+        auto& site_count = sites[candidate.result.logical_site];
+        if (site_count < 2)
+        {
+            ++site_count;
+            results.push_back(std::move(candidate.result));
+        }
+        else
+            deferred.push_back(std::move(candidate.result));
+    }
+    results.insert(results.end(), std::make_move_iterator(deferred.begin()),
+                   std::make_move_iterator(deferred.end()));
+    return results;
+}
+
+struct RawSearchDocument
+{
+    tlgs::ranking::Document fields;
+    std::vector<std::string> external_links, internal_links;
+    bool matches_retrieval = false;
+};
+
+struct SearchPageItem
+{
+    std::string url, title, content_type;
+    int64_t size = 0;
+    std::string snippet, site, indexed_content_hash;
+    size_t rank = 0;
+    tlgs::ranking::RetrievalSignals retrieval;
+    std::optional<RawSearchDocument> document;
+};
+
+// JSON belongs to the response boundary, after page loading and ranking.
+static void to_json(nlohmann::json& json, const RawSearchDocument& document)
+{
+    const auto& fields = document.fields;
+    json = {{"raw_content_hash", fields.raw_content_hash},
+            {"indexed_content_hash", fields.indexed_content_hash},
+            {"has_explicit_title", fields.has_explicit_title},
+            {"language", fields.language}, {"headings", fields.headings},
+            {"body", fields.body}, {"link_text", fields.link_text},
+            {"external_links", document.external_links},
+            {"internal_links", document.internal_links},
+            {"truncated", fields.truncated},
+            {"matches_retrieval", document.matches_retrieval}};
+}
+
+static void to_json(nlohmann::json& json, const SearchPageItem& item)
+{
+    json = {{"url", item.url}, {"title", item.title},
+            {"content_type", item.content_type}, {"size", item.size}};
+    if (item.document) {
+        json["document"] = *item.document;
+        json["site"] = item.site;
+        json["retrieval"] = item.retrieval;
+        json["retrieval"]["indexed_content_hash"] = item.indexed_content_hash;
+    }
+    else {
+        json["snippet"] = item.snippet;
+        json["rank"] = item.rank;
+    }
+}
+
+static SearchPageItem readSearchPage(const orm::Row& row, PageDataMode mode)
+{
+    SearchPageItem item;
+    item.url = row["url"].as<std::string>();
+    item.title = row["bounded_title"].as<std::string>();
+    item.content_type = row["content_type"].isNull() ? "" : row["content_type"].as<std::string>();
+    item.size = row["size"].as<int64_t>();
+    if (mode == PageDataMode::Raw) {
+        item.document = RawSearchDocument{
+            .fields = readSearchDocument(row),
+            .external_links = nlohmann::json::parse(row["external_links"].as<std::string>()).get<std::vector<std::string>>(),
+            .internal_links = nlohmann::json::parse(row["internal_links"].as<std::string>()).get<std::vector<std::string>>()};
+    }
+    else {
+        auto page = makeSearchResult(row);
+        item.title = std::move(page.title);
+        item.snippet = std::move(page.preview);
+    }
+    return item;
+}
+
+
+Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::string &query,
+                                                                const SearchFilter &filter)
+{
+#ifndef TLGS_ENABLE_LEARNED_RANKING
+    throw std::logic_error("learned ranking is unavailable");
+    co_return std::vector<RankedResult>{};
+#else
+    const auto started = std::chrono::steady_clock::now();
+    auto batch = co_await retrieveCandidates(query, filter);
+    if (batch.candidates.empty())
+        co_return std::vector<RankedResult>{};
+    // Normalize features against the full retrieval pool, even when reranking a shortlist.
+    std::vector<tlgs::ranking::RetrievalSignals> retrieval_context;
+    retrieval_context.reserve(batch.candidates.size());
+    for (const auto &candidate : batch.candidates)
+        retrieval_context.push_back(retrievalSignals(candidate));
+    rankFusionCandidates(batch.candidates, fusion_graph_weight, fusion_site_decay);
+    auto candidates = selectRerankingCandidates(batch.candidates);
+    std::vector<std::string> urls;
+    urls.reserve(candidates.size());
+    for (const auto &candidate : candidates)
+        urls.push_back(candidate.result.url);
+    const auto rows = co_await fetchSearchPageData(query, urls, PageDataMode::Ranking);
+    std::unordered_map<std::string, tlgs::ranking::Page> documents;
+    for (const auto &row : rows)
+    {
+        auto item = readRankingPage(row);
+        documents.emplace(item.url, std::move(item));
+    }
+    std::vector<tlgs::ranking::Page> items;
+    items.reserve(candidates.size());
+    for (const auto& candidate : candidates)
+    {
+        auto found = documents.find(candidate.result.url);
+        if (found == documents.end())
+            break;
+        auto item = std::move(found->second);
+        // A changed crawler snapshot must not be scored with stale retrieval data.
+        if (item.document.indexed_content_hash != candidate.indexed_content_hash)
+            break;
+        item.site = candidate.result.logical_site;
+        item.retrieval = retrievalSignals(candidate);
+        items.push_back(std::move(item));
+    }
+    if (items.size() != candidates.size()) {
+        LOG_WARN << "Ranking pages changed after retrieval; using the existing fusion results";
+        co_return finishFusionResults(std::move(batch.candidates), query,
+                                      fusion_max_site_results_per_page);
+    }
+    const auto feature_started = std::chrono::steady_clock::now();
+    auto values = tlgs::ranking::features(query, items, retrieval_context);
+    std::vector<float> scores(items.size());
+    const auto score_started = std::chrono::steady_clock::now();
+    tlgs::ranking::score_batch(values, tlgs::ranking::feature_names.size(), scores);
+    const auto score_finished = std::chrono::steady_clock::now();
+    LOG_INFO << "Learned search: " << items.size() << " candidates; features "
+             << std::chrono::duration<double, std::milli>(score_started - feature_started).count()
+             << "ms, model "
+             << std::chrono::duration<double, std::milli>(score_finished - score_started).count()
+             << "ms, total "
+             << std::chrono::duration<double, std::milli>(score_finished - started).count() << "ms";
+    co_return orderLTRResults(std::move(candidates), scores);
+#endif
+}
+
+static std::vector<RetrievalCandidate> interleaveRawCandidates(
     std::vector<RetrievalCandidate> candidates)
 {
     std::vector<size_t> lexical, graph;
@@ -1470,21 +1763,6 @@ std::vector<RetrievalCandidate> interleaveRetrievalCandidates(
     return selected;
 }
 
-bool searchApiTokenMatches(std::string_view authorization, std::string_view expected)
-{
-    constexpr std::string_view scheme = "bearer ";
-    if(expected.empty() || authorization.size() != scheme.size() + expected.size())
-        return false;
-    for(size_t i = 0; i < scheme.size(); ++i)
-        if(std::tolower(static_cast<unsigned char>(authorization[i])) != scheme[i])
-            return false;
-    // Do not short-circuit based on which secret byte differs.
-    volatile unsigned char difference = 0;
-    for(size_t i = 0; i < expected.size(); ++i)
-        difference = difference | static_cast<unsigned char>(authorization[scheme.size()+i] ^ expected[i]);
-    return difference == 0;
-}
-}
 
 Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
 {
@@ -1507,7 +1785,15 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
     };
     if(search_api_token.empty())
         co_return error(k404NotFound, "not_found", "Not found");
-    if(!searchApiTokenMatches(req->getHeader("authorization"), search_api_token)) {
+    const auto& authorization = req->getHeader("authorization");
+    constexpr std::string_view scheme = "bearer ";
+    if(authorization.size() < scheme.size()
+       || !std::equal(scheme.begin(), scheme.end(), authorization.begin(),
+           [](char expected, char actual) {
+               return expected == std::tolower(static_cast<unsigned char>(actual));
+           })
+       || !tlgs::constantTimeStringCompare(
+           std::string_view(authorization).substr(scheme.size()), search_api_token)) {
         auto response = error(k401Unauthorized, "unauthorized", "A valid bearer token is required");
         response->addHeader("WWW-Authenticate", "Bearer realm=\"search\"");
         co_return response;
@@ -1521,19 +1807,17 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
     const auto mode = requested_mode.empty() ? std::string("search") : requested_mode;
     if(mode != "search" && mode != "raw")
         co_return error(k400BadRequest, "invalid_mode", "mode must be search or raw");
-    size_t limit = 10;
-    const auto requested_limit = req->getParameter("limit");
-    if(req->getParameters().find("limit") != req->getParameters().end()) {
-        const auto [end, ec] = std::from_chars(requested_limit.data(),
-            requested_limit.data()+requested_limit.size(), limit);
-        if(ec != std::errc{} || end != requested_limit.data()+requested_limit.size()
-           || limit == 0 || limit > fusion_candidate_limit+fusion_graph_candidate_limit)
-            co_return error(k400BadRequest, "invalid_limit", "limit must be an integer from 1 to 1250");
-    }
-    try { (void)nlohmann::json(input).dump(); }
-    catch(const nlohmann::json::exception&) {
+    const auto requested_ranking = req->getParameter("ranking");
+    if(!requested_ranking.empty() && requested_ranking != "default" && requested_ranking != "traditional")
+        co_return error(k400BadRequest, "invalid_ranking", "ranking must be default or traditional");
+    if(mode == "raw" && requested_ranking == "traditional")
+        co_return error(k400BadRequest, "invalid_ranking", "raw mode returns retrieval data without final ranking");
+    const auto ranking = rankingForSearch(requested_ranking == "traditional");
+    const auto limit = req->getOptionalParameter<size_t>("limit").value_or(10);
+    if(limit == 0 || limit > fusion_candidate_limit+fusion_graph_candidate_limit)
+        co_return error(k400BadRequest, "invalid_limit", "limit must be an integer from 1 to 1250");
+    if(!tlgs::isValidUtf8(input))
         co_return error(k400BadRequest, "invalid_query", "param must be valid UTF-8");
-    }
     auto [query, filter] = parseSearchQuery(input);
     std::transform(query.begin(), query.end(), query.begin(),
         [](unsigned char c) { return std::tolower(c); });
@@ -1554,51 +1838,27 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
             batch = co_await retrieveCandidates(query, filter);
             // Small limits must sample both retrievers, including graph-only
             // destinations, rather than exhausting BM25 before seeing Hilltop.
-            batch.candidates = interleaveRetrievalCandidates(std::move(batch.candidates));
+            batch.candidates = interleaveRawCandidates(std::move(batch.candidates));
         }
         else {
             bool cache_hit;
-            ranked = co_await cachedSearch(query, filter, cache_hit);
+            ranked = co_await cachedSearch(query, filter, cache_hit, ranking);
         }
         const auto available = raw ? batch.candidates.size() : ranked->size();
         const auto selected_count = std::min(limit, available);
-        auto urls = nlohmann::json::array();
+        std::vector<std::string> urls;
         for(size_t i = 0; i < selected_count; ++i)
             urls.push_back(raw ? batch.candidates[i].result.url : (*ranked)[i].url);
 
-        auto result = nlohmann::json::array();
+        std::vector<SearchPageItem> result;
         const auto metadata_started = Clock::now();
         if(!urls.empty()) {
-            const auto rows = co_await fetchSearchPageData(query, urls, raw);
-            std::unordered_map<std::string,nlohmann::json> metadata;
+            const auto rows = co_await fetchSearchPageData(
+                query, urls, raw ? PageDataMode::Raw : PageDataMode::Rendered);
+            std::unordered_map<std::string, SearchPageItem> metadata;
             for(const auto& row : rows) {
-                auto item = nlohmann::json{{"url",row["url"].as<std::string>()},
-                    {"title",row["bounded_title"].as<std::string>()},
-                    {"content_type",row["content_type"].isNull() ? "" : row["content_type"].as<std::string>()},
-                    {"size",row["size"].as<int64_t>()}};
-                if(raw) {
-                    item["document"] = {{"raw_content_hash",row["raw_hash"].as<std::string>()},
-                        {"indexed_content_hash",row["indexed_hash"].as<std::string>()},
-                        {"has_explicit_title",row["explicit_title"].as<bool>()},
-                        {"language",row["language"].as<std::string>()},
-                        {"headings",row["headings"].as<std::string>()},
-                        {"body",row["body"].as<std::string>()},
-                        {"link_text",row["link_text"].as<std::string>()},
-                        {"external_links",nlohmann::json::parse(row["external_links"].as<std::string>())},
-                        {"internal_links",nlohmann::json::parse(row["internal_links"].as<std::string>())},
-                        {"truncated",{{"title",row["title_truncated"].as<bool>()},
-                                      {"headings",row["headings_truncated"].as<bool>()},
-                                      {"body",row["body_truncated"].as<bool>()},
-                                      {"link_text",row["link_text_truncated"].as<bool>()},
-                                      {"external_links",row["external_links_truncated"].as<bool>()},
-                                      {"internal_links",row["internal_links_truncated"].as<bool>()}}}};
-                }
-                else {
-                    const auto page = makeSearchResult(row);
-                    item["title"] = page.title;
-                    item["snippet"] = page.preview;
-                }
-                metadata.emplace(item["url"].get<std::string>(), std::move(item));
+                auto item = readSearchPage(row, raw ? PageDataMode::Raw : PageDataMode::Rendered);
+                metadata.emplace(item.url, std::move(item));
             }
             for(size_t i = 0; i < selected_count; ++i) {
                 const auto& url = raw ? batch.candidates[i].result.url : (*ranked)[i].url;
@@ -1607,27 +1867,23 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
                 auto item = std::move(found->second);
                 if(raw) {
                     const auto& candidate = batch.candidates[i];
-                    item["site"] = candidate.result.logical_site;
-                    item["retrieval"] = {
-                        {"bm25",candidate.fts_rank ? nlohmann::json{
-                            {"score",candidate.bm25_score},{"rank",candidate.fts_rank}} : nlohmann::json(nullptr)},
-                        {"hilltop",candidate.graph_rank ? nlohmann::json{
-                            {"score",candidate.authority_score},{"rank",candidate.graph_rank},
-                            {"independent_sites",candidate.independent_sites}} : nlohmann::json(nullptr)},
-                        {"indexed_content_hash",candidate.indexed_content_hash}};
-                    item["document"]["matches_retrieval"] =
+                    item.site = candidate.result.logical_site;
+                    item.retrieval = retrievalSignals(candidate);
+                    item.indexed_content_hash = candidate.indexed_content_hash;
+                    item.document->matches_retrieval =
                         !candidate.indexed_content_hash.empty()
-                        && item["document"]["indexed_content_hash"] == candidate.indexed_content_hash;
+                        && item.document->fields.indexed_content_hash == candidate.indexed_content_hash;
                 }
-                else item["rank"] = i+1;
+                else item.rank = i+1;
                 result.push_back(std::move(item));
             }
         }
         auto body = nlohmann::json{{"query",input},{"mode",mode},{"limit",limit},
             {"available",available},{"returned",result.size()},{"results",std::move(result)},
             {"took_ms",std::chrono::duration<double,std::milli>(Clock::now()-started).count()}};
+        body["ranking"] = raw ? std::string_view("retrieval") : rankingName(ranking);
         if(raw) body["raw"] = {{"schema_version",1},{"query",query},
-            {"filters",serializeSearchFilter(filter)},
+            {"filters",filter},
             {"order","interleaved_bm25_hilltop"},
             {"timings_ms",{{"bm25",batch.bm25_ms},{"hilltop",batch.hilltop_ms},
                            {"retrieval",batch.total_ms},
@@ -1661,7 +1917,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
 
     auto t1 = high_resolution_clock::now();
 
-    auto input = utils::urlDecode(req->getParameter("query"));
+    const auto input = req->getParameter("query");
     if(input.size() > 1024) {
         auto resp = HttpResponse::newHttpResponse();
         resp->addHeader("meta", "Search query is too long");
@@ -1669,7 +1925,8 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
         co_return resp;
     }
     auto [query_str, filter] = parseSearchQuery(input);
-    std::transform(query_str.begin(), query_str.end(), query_str.begin(), ::tolower);
+    std::transform(query_str.begin(), query_str.end(), query_str.begin(),
+        [](unsigned char c) { return std::tolower(c); });
 
     if(query_str.empty()) {
         auto resp = HttpResponse::newHttpResponse();
@@ -1683,7 +1940,11 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     const size_t current_page_idx = std::max<uint64_t>(requested_page, 1) - 1;
 
     bool cache_hit;
-    const auto filtered_result = co_await cachedSearch(query_str, filter, cache_hit);
+    const auto& path = req->path();
+    const bool traditional = path == "/search/no_ml" || path.starts_with("/search/no_ml/")
+        || path == "/v/search/no_ml" || path.starts_with("/v/search/no_ml/");
+    const auto filtered_result = co_await cachedSearch(query_str, filter, cache_hit,
+        rankingForSearch(traditional));
     const std::string cache_status = cache_hit ? "(fully cached)" : "";
 
     const auto result_count = filtered_result->size();
@@ -1694,7 +1955,7 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     auto begin = filtered_result->begin() + offset;
     auto end = filtered_result->begin() + end_offset;
 
-    nlohmann::json selected_urls = nlohmann::json::array();
+    std::vector<std::string> selected_urls;
     for(const auto& item : std::ranges::subrange(begin, end)) {
         selected_urls.push_back(item.url);
     }
@@ -1728,6 +1989,9 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     data["title"] = sanitizeGemini(input) + " - TLGS Search";
     data["verbose"] = req->path().starts_with("/v/search");
     data["encoded_search_term"] = encoded_search_term;
+    data["traditional_ranking"] = traditional;
+    data["search_base_path"] = std::string(traditional ? "/search/no_ml" : "/search");
+    data["search_jump_path"] = std::string(traditional ? "/search/no_ml/jump" : "/search_jump");
     data["total_results"] = filtered_result->size();
     data["current_page_idx"] = current_page_idx;
     data["item_per_page"] = search_results_per_page;
@@ -1742,14 +2006,14 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     const auto& protocol = req->getAttributes()->get<std::string>("protocol");
     LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds. source: {}, proto: {}."
         , tlgs::logText(input), cache_status, processing_time
-        , tlgs::logText(peer_ip.empty() ? req->peerAddr().toIp() : peer_ip)
+        , tlgs::logText(peer_ip.empty() ? req->getHeader("X-Real-IP") : peer_ip)
         , tlgs::logText(protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol));
     co_return resp;
 }
 
 Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::string search_term)
 {
-    auto input = utils::urlDecode(req->getParameter("query"));
+    const auto input = req->getParameter("query");
     auto page = tlgs::try_strtoull(input);
     if(page.has_value() == false || page.value() == 0) {
         auto resp = HttpResponse::newHttpResponse();
@@ -1759,7 +2023,9 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
     }
 
     bool verbose = req->path().starts_with("/v");
-    const std::string_view search_path = verbose ? "/v/search" : "/search";
+    const bool traditional = req->path().find("/no_ml/") != std::string::npos;
+    const std::string search_path = std::string(verbose ? "/v" : "")
+        + (traditional ? "/search/no_ml" : "/search");
 
     auto resp = HttpResponse::newHttpResponse();
     std::string redirect_location;
@@ -1775,7 +2041,7 @@ Task<HttpResponsePtr> SearchController::jump_search(HttpRequestPtr req, std::str
 
 Task<HttpResponsePtr> SearchController::backlinks(HttpRequestPtr req)
 {
-    auto input = utils::urlDecode(req->getParameter("query"));
+    const auto input = req->getParameter("query");
     tlgs::Url url(input);
     // try prepend gemini:// and see if it works
     if(url.good() == false)

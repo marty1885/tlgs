@@ -25,6 +25,8 @@ As of now, indexing of news sites, RFCs, documentations are mostly disabled. But
 * [TBB](https://github.com/oneapi-src/oneTBB)
 * [xxHash](https://github.com/Cyan4973/xxHash)
 * [toml11](https://github.com/ToruNiina/toml11)
+* [Highway](https://github.com/google/highway) (for learned ranking) - see [tlgs-reranker-model](https://github.com/marty1885/tlgs-reranker-model)
+* ICU (learned ranking)
 * iconv
 * PostgreSQL
 
@@ -167,11 +169,14 @@ The ranking algorithm TLGS uses to rank pages in search results. Current support
 
 `fusion` is a hand tuned FTS and Hilltop algorithm that imperically works and is much faster then SALSA/HITS + FTS but limited to 1000 results. The weight of FTS vs Hilltop defaults to `1.0` and can be adjusted in config. 
 
+And `search_api_token` when set to a non-empty value, enables the search API for remote programmtic access
+
 ```json
 "ranking_algo": "fusion",
 "fusion_graph_weight": 1.0,
 "fusion_site_decay": 0.5,
 "fusion_max_site_results_per_page": 2
+"search_api_token": ""
 ```
 
 [hits]: http://www.cs.cornell.edu/home/kleinber/auth.pdf

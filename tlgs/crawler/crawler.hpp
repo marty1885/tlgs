@@ -15,7 +15,8 @@
 
 struct TardisCapture;
 
-class GeminiCrawler : public trantor::NonCopyable
+class GeminiCrawler : public trantor::NonCopyable,
+                       public std::enable_shared_from_this<GeminiCrawler>
 {
 public:
     using EventLoop = trantor::EventLoop;
@@ -58,8 +59,13 @@ public:
 
             // A completed crawl schedules its replacement after releasing its
             // slot. Retry dispatch if that callback has not run yet.
-            if(ongoing_crawlings_ == 0 && !ended_)
-                loop_->runInLoop([this] {dispatchCrawl();});
+            if(ongoing_crawlings_ == 0 && !ended_) {
+                const auto weak = weak_from_this();
+                loop_->runInLoop([weak] {
+                    if(const auto crawler = weak.lock())
+                        crawler->dispatchCrawl();
+                });
+            }
         }
         co_return;
     }

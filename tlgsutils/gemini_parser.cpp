@@ -6,6 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <array>
+#include <cctype>
 
 namespace tlgs
 {
@@ -132,7 +133,9 @@ GeminiDocument extractGeminiConcise(const std::vector<dremini::GeminiASTNode>& n
 
             std::string meta = node.meta;
             // common text in the meta field that contains ASCII art
-            std::transform(meta.begin(), meta.end(), meta.begin(), ::tolower);
+            std::transform(meta.begin(), meta.end(), meta.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
             if(meta.find("ascii") != std::string::npos
                 || meta.find("art") != std::string::npos
                 || meta.find("banner") != std::string::npos

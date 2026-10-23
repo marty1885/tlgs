@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cctype>
 
 namespace tlgs
 {
@@ -14,6 +15,7 @@ struct Url
     Url& operator=(const tlgs::Url&) = default;
     inline bool good() const { return good_; }
     std::string str() const;
+    std::string authority() const;
     std::string hostWithPort(unsigned short default_port) const;
     Url& withHost(const std::string& new_host);
     Url& withPath(const std::string& new_path, bool normalize_path = true);
@@ -28,7 +30,7 @@ struct Url
     {
         good_ = !protocol_.empty() && !host_.empty() && !path_.empty();
         for(auto ch : protocol_) {
-            if(isalnum(ch) == false) {
+            if(std::isalnum(static_cast<unsigned char>(ch)) == false) {
                 good_ = false;
                 break;
             }

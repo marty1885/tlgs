@@ -599,34 +599,39 @@ void GeminiCrawler::dispatchCrawl()
     if(counter->count() >= max_concurrent_connections_)
         return;
 
-    async_run([counter, this]() mutable -> Task<void> {try{
-        auto url_str = co_await getNextCrawlPage();
+    auto self = shared_from_this();
+    async_run([counter, self = std::move(self)]() mutable -> Task<void> {try{
+        auto url_str = co_await self->getNextCrawlPage();
         // Crawling has ended if the following is true
         // 1. There's no more URL to crawl
         // 2. The current crawl is the last one in existance
         //    * Since a crawler can add new items into the queue
         if(url_str.has_value() == false) {
             if(counter->release() == 0)
-                ended_ = true;
+                self->ended_ = true;
             co_return;
         }
-        loop_->runInLoop([this](){dispatchCrawl();});
+        auto queue_dispatch = [weak = std::weak_ptr<GeminiCrawler>(self)] {
+            if(const auto crawler = weak.lock())
+                crawler->dispatchCrawl();
+        };
+        self->loop_->runInLoop(queue_dispatch);
 
         size_t retry_count = 0;
         while(true) {
             double retry_delay = 0;
             try {
-                bool success = co_await crawlPage(url_str.value(), retry_count != 0);
+                bool success = co_await self->crawlPage(url_str.value(), retry_count != 0);
                 if(success)
                     LOG_INFO << "Processed " << url_str.value();
-                if(tardis_active_) {
-                    std::lock_guard lock(tardis_captures_mutex_);
-                    tardis_captures_.erase(url_str.value());
+                if(self->tardis_active_) {
+                    std::lock_guard lock(self->tardis_captures_mutex_);
+                    self->tardis_captures_.erase(url_str.value());
                 }
                 break;
             }
             catch(std::exception& e) {
-                if(tardis_active_ && isSqlExecutionTimeout(e.what())) {
+                if(self->tardis_active_ && isSqlExecutionTimeout(e.what())) {
                     ++retry_count;
                     const auto exponent = std::min<size_t>(retry_count - 1, 7);
                     retry_delay = std::min(30.0, 0.25 * static_cast<double>(size_t{1} << exponent));
@@ -635,24 +640,28 @@ void GeminiCrawler::dispatchCrawl()
                 }
                 else {
                     LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
-                    if(tardis_active_) {
-                        std::lock_guard lock(tardis_captures_mutex_);
-                        tardis_captures_.erase(url_str.value());
+                    if(self->tardis_active_) {
+                        std::lock_guard lock(self->tardis_captures_mutex_);
+                        self->tardis_captures_.erase(url_str.value());
                         break;
                     }
                     abort();
                 }
             }
             if(retry_delay != 0)
-                co_await drogon::sleepCoro(loop_, retry_delay);
+                co_await drogon::sleepCoro(self->loop_, retry_delay);
         }
         counter->release();
-        loop_->queueInLoop([this](){dispatchCrawl();});
+        self->loop_->queueInLoop(queue_dispatch);
     }
     catch(std::exception& e) {
         LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
         counter->release();
-        loop_->queueInLoop([this](){dispatchCrawl();});
+        const auto weak = std::weak_ptr<GeminiCrawler>(self);
+        self->loop_->queueInLoop([weak] {
+            if(const auto crawler = weak.lock())
+                crawler->dispatchCrawl();
+        });
     }});
 }
 

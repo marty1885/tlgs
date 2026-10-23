@@ -2,10 +2,33 @@
 #include <regex>
 #include <filesystem>
 #include <iostream>
-#include <cassert>
+#include <cctype>
 #include <unordered_map>
 #include <xxhash.h>
+#include <unicode/utf8.h>
 #include <drogon/utils/Utilities.h>
+
+bool tlgs::constantTimeStringCompare(std::string_view lhs, std::string_view rhs)
+{
+    if(lhs.size() != rhs.size())
+        return false;
+    volatile unsigned char difference = 0;
+    for(size_t i = 0; i < lhs.size(); ++i)
+        difference = difference | static_cast<unsigned char>(lhs[i] ^ rhs[i]);
+    return difference == 0;
+}
+
+bool tlgs::isValidUtf8(std::string_view text)
+{
+    size_t position = 0;
+    while(position < text.size()) {
+        UChar32 codepoint;
+        U8_NEXT(text.data(), position, text.size(), codepoint);
+        if(codepoint < 0)
+            return false;
+    }
+    return true;
+}
 
 static std::string charToHex(char c)
 {
@@ -216,7 +239,7 @@ std::string tlgs::urlEncode(const std::string_view src)
     {
         if (ch == ' ')
             result.append(1, '+');
-        else if (isalnum(ch) || symbols.find(ch) != std::string_view::npos)
+        else if (std::isalnum(static_cast<unsigned char>(ch)) || symbols.find(ch) != std::string_view::npos)
             result.append(1, ch);
         else
         {
@@ -272,7 +295,8 @@ std::string tlgs::geminiLinkTarget(const std::string_view url)
 
 tlgs::Url tlgs::linkCompose(const tlgs::Url& url, const std::string& path)
 {
-    assert(path.size() != 0);
+    if(path.empty())
+        return tlgs::Url("");
     tlgs::Url link_url;
     if(path[0] == '/') {
         tlgs::Url dummy = tlgs::Url("gemini://localhost"+path);
@@ -302,7 +326,7 @@ bool tlgs::isNonUriAction(const std::string& str)
     if(n == std::string::npos)
         return false;
     for(size_t i = 0; i < n; i++) {
-        if(isalpha(str[i]) == false)
+        if(std::isalpha(static_cast<unsigned char>(str[i])) == false)
             return false;
     }
     return true;

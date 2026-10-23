@@ -2,6 +2,32 @@
 #include <tlgsutils/counter.hpp>
 #include <drogon/drogon_test.h>
 
+DROGON_TEST(ValidUtf8)
+{
+    CHECK(tlgs::isValidUtf8(""));
+    CHECK(tlgs::isValidUtf8("ASCII café 中文 Русский 😀"));
+    CHECK(tlgs::isValidUtf8(std::string_view("a\0b", 3)));
+    CHECK(tlgs::isValidUtf8("\xf4\x8f\xbf\xbf")); // U+10FFFF
+    for(const auto invalid : {"\x80", "\xc0\xaf", "\xe0\x80\xaf",
+            "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80",
+            "\xc2", "\xe2\x82", "\xf0\x9f\x98", "\xe2(\xa1"})
+        CHECK(!tlgs::isValidUtf8(invalid));
+}
+
+DROGON_TEST(ConstantTimeStringCompare)
+{
+    CHECK(tlgs::constantTimeStringCompare("", ""));
+    CHECK(tlgs::constantTimeStringCompare("secret", "secret"));
+    CHECK(!tlgs::constantTimeStringCompare("secret", "Secret"));
+    CHECK(!tlgs::constantTimeStringCompare("secret", "secreT"));
+    CHECK(!tlgs::constantTimeStringCompare("secret", "secret!"));
+    CHECK(!tlgs::constantTimeStringCompare("secret!", "secret"));
+    CHECK(!tlgs::constantTimeStringCompare("", "secret"));
+    CHECK(tlgs::constantTimeStringCompare(std::string_view("a\0b", 3), std::string_view("a\0b", 3)));
+    CHECK(!tlgs::constantTimeStringCompare(std::string_view("a\0b", 3), std::string_view("a\0c", 3)));
+    CHECK(!tlgs::constantTimeStringCompare(std::string_view("\xff", 1), std::string_view("\x7f", 1)));
+}
+
 DROGON_TEST(HighlightQueryKeepsPositiveTermsAndPhrases)
 {
     CHECK(tlgs::highlightQuery("gemini search engines") == "gemini OR search OR engines");
@@ -146,6 +172,7 @@ DROGON_TEST(AsciiArtDetectorTest)
 DROGON_TEST(LinkCompositionTest)
 {
     auto url = tlgs::Url("gemini://localhost/");
+    CHECK(!tlgs::linkCompose(url, "").good());
     std::string path = "/dir";
     CHECK(tlgs::linkCompose(url, path).str() == "gemini://localhost/dir");
 

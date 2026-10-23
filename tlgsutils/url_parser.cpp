@@ -2,6 +2,7 @@
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
+#include <cctype>
 
 using namespace tlgs;
 
@@ -38,7 +39,7 @@ Url::Url(const std::string& str, bool normalize_url)
             return;
         }
         for(auto ch : protocol_) {
-            if(isalnum(ch) == false) {
+            if(std::isalnum(static_cast<unsigned char>(ch)) == false) {
                 good_ = false;
                 return;
             }
@@ -123,6 +124,12 @@ std::string Url::str() const
         res += "#"+fragment_;
     cache_ = res;
     return res;
+}
+
+std::string Url::authority() const
+{
+    // Preserve an explicitly supplied port, including the protocol default.
+    return port_ ? host_ + ":" + std::to_string(port_) : host_;
 }
 
 std::string Url::hostWithPort(unsigned short default_port) const

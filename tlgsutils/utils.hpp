@@ -1,4 +1,5 @@
 #include <string>
+#include <string_view>
 #include <vector>
 #include <algorithm>
 #include <optional>
@@ -9,6 +10,12 @@
 
 namespace tlgs
 {
+/** Compare string contents without early exit; unequal lengths return false. */
+bool constantTimeStringCompare(std::string_view lhs, std::string_view rhs);
+
+/** Check UTF-8 encoding, rejecting invalid Unicode scalar values. */
+bool isValidUtf8(std::string_view text);
+
 /**
  * @brief Detects if the string is ASCII art using a simple heuristic
  * 

@@ -3,12 +3,13 @@
 
 ### The search algorithm
 
-TLGS uses a combination of content ranking and link analysis to generate the search result. Put it simply, TlGS first finds all pages in it's index that matches the search query. Then it collects the connection from or to the matched pages. Figures out which pages are more popular. Then, the two information are combined to form the final search result. The technique TLGS uses are designed for the early web - which is exactly what Gemini is designed to be like.
+TLGS uses a combination of content ranking, link analysis and ML based methods to generate the search result. Put it simply, TLGS first finds all pages in it's index that matches the search query. Then it collects the connection from or to the matched pages. Figures out which pages are more popular. Then, the two information are combined to form the final search result. The technique TLGS uses are designed for the early web - which is exactly what Gemini is designed to be like.
 
 Here's links if you want to learn more:
 
 => https://en.wikipedia.org/wiki/Full-text_search Wikipedia: Full-text search
 => http://www.cs.technion.ac.il/~moran/r/PS/www9.pdf SALSA: The stochastic approach for link-structure analysis (SALSA) and the TKC effect
+=> https://en.wikipedia.org/wiki/Learning_to_rank Wikipedia: Learning to Rank
 
 ### Filters
 
@@ -35,7 +36,7 @@ The size filter works slightly differently. Instead of searching for a certain s
 => /search?Gemini%20size%3A%3C5KB Gemini size:<5KB
 => /search?Gemini%20size%3A%3C0.005MiB Gemini size:<0.005MiB
 
-The NOT operator negates the proceeding filter. 
+The NOT operator negates the proceeding filter.
 
 => /search?Gemini%20NOT%20content_type%3Atext%2Fgemini Gemini NOT content_type:text/gemini
 
@@ -46,9 +47,16 @@ Applying filters of the same type effectively ORs them together. While applying 
 
 ### Verbose mode
 
-Verbose mode allows one to gain insight on how TLGS ranks contents and when the page is crawled. You can enable verbose mode on any search page by clicking the "Enter Verbose Mode" link. This will send to a similar page but with more information about the search. You can then click "Exit Verbose Mode" to return to the normal search style. 
+Verbose mode allows one to gain insight on how TLGS ranks contents and when the page is crawled. You can enable verbose mode on any search page by clicking the "Enter Verbose Mode" link. This will send to a similar page but with more information about the search. You can then click "Exit Verbose Mode" to return to the normal search style.
 
 You can also enter verbose mode manually via the URL. Prefix any search page with a `/v` to enter. For example:
 
 => /search?Gemini
 => /v/search?Gemini
+
+### Non ML (Machine Learning) mode
+
+TLGS uses LTR (Learning to Rank) to refine its search results in order to provide better usage experience. For users who wish to opt-out. The /search/no_ml endpoint disables LTR reranking, falling back on pure text search and graph ranking. For example:
+
+=> /search/no_ml?Misfin%20Mail
+=> /v/search/no_ml?Misfin%20Mail

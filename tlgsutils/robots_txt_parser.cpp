@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <filesystem>
+#include <cctype>
 
 std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std::set<std::string>& agents)
 {
@@ -25,7 +26,9 @@ std::vector<std::string> tlgs::parseRobotsTxt(const std::string& str, const std:
         
         std::string key = match[1];
         //  convert to lowercase
-        std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
         if(key == "user-agent") {
             std::string agent = match[2];
             if(last_line_user_agent) {

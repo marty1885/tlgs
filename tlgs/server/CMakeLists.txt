@@ -25,3 +25,20 @@ add_custom_command(
           $<TARGET_FILE_DIR:tlgs_server>/contents)
 
 install(TARGETS tlgs_server RUNTIME DESTINATION bin)
+
+# The generated header carries the schema checked by ranking/model.cpp.
+set(TLGS_RANKER_MODEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ranking" CACHE PATH "Highway model bundle for learned search ranking")
+if(TLGS_RANKER_MODEL_DIR)
+  get_filename_component(TLGS_RANKER_DIRECTORY "${TLGS_RANKER_MODEL_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+  set(TLGS_RANKER_SOURCE "${TLGS_RANKER_DIRECTORY}/ranker.cc")
+  find_package(hwy CONFIG REQUIRED)
+  target_sources(tlgs_server PRIVATE ranking/model.cpp "${TLGS_RANKER_SOURCE}")
+  target_link_libraries(tlgs_server PRIVATE hwy::hwy)
+  target_compile_definitions(tlgs_server PRIVATE TLGS_ENABLE_LEARNED_RANKING=1)
+  set_source_files_properties(ranking/model.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${TLGS_RANKER_DIRECTORY}")
+  set_source_files_properties("${TLGS_RANKER_SOURCE}" PROPERTIES
+    INCLUDE_DIRECTORIES "${TLGS_RANKER_DIRECTORY}"
+    SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
+  message(STATUS "TLGS learned ranking model: ${TLGS_RANKER_DIRECTORY}")
+endif()
