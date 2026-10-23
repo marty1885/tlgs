@@ -22,7 +22,7 @@
 #include "search_result.hpp"
 #include <tlgsutils/ranking/types.hpp>
 #ifdef TLGS_ENABLE_LEARNED_RANKING
-#include <tlgsutils/ranking/features.hpp>
+#include <tlgsutils/ranking/context_features.hpp>
 #include "ranking/model.hpp"
 #endif
 
@@ -766,7 +766,7 @@ SearchController::SearchController()
     }
 
     if(ranking_algorithm == RankingAlgorithm::LEARNED) {
-        LOG_INFO << "Search ranking: learned (visiblebody111 Highway model)";
+        LOG_INFO << "Search ranking: learned (versioned Highway model)";
     }
     else if(ranking_algorithm == RankingAlgorithm::FUSION) {
         LOG_INFO << "Search ranking: fusion (graph weight " << fusion_graph_weight
@@ -1712,10 +1712,51 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
                                       fusion_max_site_results_per_page);
     }
     const auto feature_started = std::chrono::steady_clock::now();
-    auto values = tlgs::ranking::features(query, items, retrieval_context);
+    std::vector<float> values;
+    const auto columns = tlgs::ranking::model_feature_count();
+    if (columns == tlgs::ranking::context_feature_names.size()) {
+        // One statement gives frequencies, contexts and their metadata the same
+        // MVCC snapshot, even while the offline refresh atomically replaces them.
+        try {
+            const auto terms = tlgs::ranking::context_terms(query);
+            const auto context = co_await app().getDbClient()->execSqlCoro(R"sql(
+                SELECT s.documents,
+                    coalesce((SELECT jsonb_object_agg(f.term,f.documents)
+                        FROM ranking_term_frequency f
+                        JOIN jsonb_array_elements_text($1::jsonb) q(term) ON q.term=f.term),'{}'::jsonb)::text AS df,
+                    coalesce((SELECT jsonb_object_agg(c.url,c.contexts)
+                        FROM ranking_incoming_context c
+                        JOIN jsonb_array_elements_text($2::jsonb) q(url) ON q.url=c.url),'{}'::jsonb)::text AS incoming
+                FROM ranking_context_state s JOIN site_identity_state i
+                  ON i.singleton AND i.active_ruleset_id=s.ruleset_id
+                WHERE s.singleton AND s.feature_version=1
+            )sql", nlohmann::json(terms).dump(), nlohmann::json(urls).dump());
+            if (context.empty()) throw std::runtime_error("Incoming ranking cache is missing or uses an obsolete site ruleset");
+            tlgs::ranking::CorpusStatistics stats;
+            stats.documents = context[0]["documents"].as<size_t>();
+            stats.document_frequency = nlohmann::json::parse(context[0]["df"].as<std::string>())
+                .get<std::unordered_map<std::string,size_t>>();
+            const auto cached = nlohmann::json::parse(context[0]["incoming"].as<std::string>());
+            std::vector<std::vector<tlgs::ranking::IncomingContext>> incoming;
+            for (const auto& item : items) {
+                std::vector<tlgs::ranking::IncomingContext> contexts;
+                if (cached.contains(item.url))
+                    for (const auto& c : cached.at(item.url))
+                        contexts.push_back({c.at(0).get<std::string>(), c.at(1).get<size_t>()});
+                incoming.push_back(std::move(contexts));
+            }
+            values = tlgs::ranking::context_features(query,items,incoming,stats,retrieval_context);
+        } catch (const std::exception& error) {
+            LOG_WARN << "Incoming ranking unavailable; using fusion: " << error.what();
+        }
+        if (values.empty())
+            co_return finishFusionResults(std::move(batch.candidates),query,fusion_max_site_results_per_page);
+    } else {
+        values = tlgs::ranking::features(query,items,retrieval_context);
+    }
     std::vector<float> scores(items.size());
     const auto score_started = std::chrono::steady_clock::now();
-    tlgs::ranking::score_batch(values, tlgs::ranking::feature_names.size(), scores);
+    tlgs::ranking::score_batch(values, columns, scores);
     const auto score_finished = std::chrono::steady_clock::now();
     LOG_INFO << "Learned search: " << items.size() << " candidates; features "
              << std::chrono::duration<double, std::milli>(score_started - feature_started).count()

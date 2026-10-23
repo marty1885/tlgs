@@ -1,4 +1,5 @@
 #include <drogon/drogon.h>
+#include "ranking_context.hpp"
 #include <drogon/utils/coroutine.h>
 #include <tlgsutils/site_identity.hpp>
 #include <nlohmann/json.hpp>
@@ -1200,6 +1201,7 @@ Task<> compareRankings(std::string query)
 int main(int argc, char** argv)
 {
 	std::string config_file = "/etc/tlgs/config.json";
+    int exit_status = 0;
 	CLI::App cli{"TLGS Utiltity"};
 	
 	CLI::App& populate_schema = *cli.add_subcommand("populate_schema", "Populate/update database schema");
@@ -1230,6 +1232,10 @@ int main(int argc, char** argv)
 	search_index.require_subcommand(1);
 	CLI::App& rebuild_search_index = *search_index.add_subcommand(
 		"rebuild", "Migrate missing title vectors and rebuild authority recommendations");
+    CLI::App& rebuild_ranking_context = *search_index.add_subcommand(
+        "rebuild-ranking-context", "Refresh incoming ranking context and corpus term frequencies");
+    bool ranking_context_dry_run = false;
+    rebuild_ranking_context.add_flag("--dry-run", ranking_context_dry_run, "Compute counts without publishing");
 	CLI::App& search_index_status = *search_index.add_subcommand(
 		"status", "Show BM25/title and authority index statistics");
 	CLI::App& retire_legacy_fts = *search_index.add_subcommand(
@@ -1299,6 +1305,10 @@ int main(int argc, char** argv)
 	else if(rollback_site_rules) {
 		app().getLoop()->queueInLoop(async_func(std::bind(rollbackSiteRules, rollback_ruleset_id)));
 	}
+    else if(rebuild_ranking_context) {
+        app().getLoop()->queueInLoop(async_func(
+            std::bind(rebuildRankingContext, ranking_context_dry_run, &exit_status)));
+    }
 	else if(rebuild_search_index || rebuild_hilltop) {
 		app().getLoop()->queueInLoop(async_func(std::bind(rebuildHilltop, bool(rebuild_search_index))));
 	}
@@ -1323,4 +1333,5 @@ int main(int argc, char** argv)
 	}
 
 	app().run();
+    return exit_status;
 }

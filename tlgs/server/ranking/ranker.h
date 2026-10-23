@@ -3,7 +3,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Row-major float32, 111 columns; missing=NaN, no alignment required.
+/* Row-major float32, 150 columns; missing=NaN, no alignment required.
  * Returns 0 on success, 1 for wrong shape, 2 for invalid buffers, 3 for overlap.
  * Lengths count float elements, not bytes. No reads/writes on rejection.
  * Empty input/output supported; checked shape must still match this model. */
@@ -19,10 +19,10 @@ const char *ranker_target(void);
 #include <string_view>
 namespace ranker_api {
 inline constexpr unsigned abi_version = 2;
-inline constexpr size_t feature_count = 111;
+inline constexpr size_t feature_count = 150;
 inline constexpr unsigned feature_version = 1;
-inline constexpr std::string_view feature_set = "visiblebody111";
-inline constexpr std::array<std::string_view, 111> feature_names = {{
+inline constexpr std::string_view feature_set = "incoming150";
+inline constexpr std::array<std::string_view, 150> feature_names = {{
     "bm25_log_score",
     "bm25_present",
     "bm25_relative",
@@ -95,6 +95,45 @@ inline constexpr std::array<std::string_view, 111> feature_names = {{
     "link_text_unique_fraction",
     "logical_path_depth",
     "logical_root",
+    "m_anchor_all_terms",
+    "m_anchor_best_span",
+    "m_anchor_contexts_log",
+    "m_anchor_coverage",
+    "m_anchor_exact_phrase",
+    "m_anchor_first_match",
+    "m_anchor_log_chars",
+    "m_anchor_log_tokens",
+    "m_anchor_matched_fraction",
+    "m_anchor_max_support_log",
+    "m_anchor_most_common_fraction",
+    "m_anchor_query_precision",
+    "m_anchor_tf_max",
+    "m_anchor_tf_mean",
+    "m_anchor_tf_min",
+    "m_anchor_unique_fraction",
+    "m_delta_bm25",
+    "m_delta_coverage",
+    "m_delta_first",
+    "m_delta_flags",
+    "m_delta_passes_all_terms",
+    "m_delta_phrase",
+    "m_delta_proximity",
+    "m_incoming_bm25",
+    "m_incoming_coverage",
+    "m_incoming_first",
+    "m_incoming_flags",
+    "m_incoming_passes_all_terms",
+    "m_incoming_phrase",
+    "m_incoming_proximity",
+    "m_incoming_total",
+    "m_local_bm25",
+    "m_local_coverage",
+    "m_local_first",
+    "m_local_flags",
+    "m_local_passes_all_terms",
+    "m_local_phrase",
+    "m_local_proximity",
+    "m_local_total",
     "outgoing_log",
     "query_log_chars",
     "query_terms",

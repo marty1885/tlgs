@@ -1,9 +1,12 @@
 #include "features.hpp"
+#include "context_features.hpp"
+#include <unicode/locid.h>
 #include <tlgsutils/url_parser.hpp>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <set>
+#include <span>
 #include <drogon/utils/Utilities.h>
 #include <stdexcept>
 #include <unicode/uchar.h>
@@ -453,6 +456,476 @@ std::vector<float> features(const std::string &query, const std::vector<Page> &i
     for (auto &item : items)
     {
         auto values = extract(query, q, qt, item, maximum_bm25_score, maximum_hilltop_score, bm25_first_to_second_gap, bm25_first_to_tail_gap, version);
+        result.insert(result.end(), values.begin(), values.end());
+    }
+    return result;
+}
+std::vector<std::string> context_terms(const std::string &text)
+{
+    auto u = unicode(text);
+    u.toLower(icu::Locale::getRoot());
+    const auto lower = utf8(u);
+    Words result;
+    int32_t start = 0;
+    for (int32_t i = 0; i < static_cast<int32_t>(lower.size());)
+    {
+        const auto at = i;
+        UChar32 c;
+        U8_NEXT(lower.data(), i, static_cast<int32_t>(lower.size()), c);
+        if (!alnum(c))
+        {
+            if (at > start)
+                result.push_back(lower.substr(start, at - start));
+            start = i;
+        }
+    }
+    if (start < static_cast<int32_t>(lower.size()))
+        result.push_back(lower.substr(start));
+    return result;
+}
+
+std::vector<std::string> context_url_terms(const std::string& text)
+{
+    const Url url(text, false);
+    return context_terms(url.authority() + " " + unquote(url.path()));
+}
+
+namespace
+{
+enum ContextField : size_t
+{
+    TitleField,
+    HeadingField,
+    BodyField,
+    OutgoingField,
+    AddressField,
+    IncomingField,
+    ContextFieldCount
+};
+
+struct ContextPart
+{
+    ContextField field;
+    Words words;
+};
+
+static Words contentQueryTerms(const Words &words)
+{
+    Words content;
+    for (const auto &word : words)
+        if (!stop.count(word))
+            content.push_back(word);
+    return content.empty() ? words : content;
+}
+
+struct ContextQuery
+{
+    Words phrase;
+    Terms terms;
+    Words anchor_phrase;
+    Terms anchor_terms;
+
+    explicit ContextQuery(const std::string &query)
+        : phrase(context_terms(query)), anchor_phrase(contentQueryTerms(tokens(query))),
+          anchor_terms(anchor_phrase.begin(), anchor_phrase.end())
+    {
+        const auto content = contentQueryTerms(phrase);
+        terms.insert(content.begin(), content.end());
+    }
+};
+
+struct ContextCounts
+{
+    std::array<std::unordered_map<std::string, size_t>, ContextFieldCount> fields;
+    std::array<size_t, ContextFieldCount> lengths{};
+    std::unordered_map<std::string, size_t> first_positions;
+
+    explicit ContextCounts(const std::vector<ContextPart> &parts)
+    {
+        size_t position = 1;
+        for (const auto &part : parts)
+        {
+            lengths[part.field] += part.words.size();
+            for (size_t i = 0; i < part.words.size(); ++i)
+            {
+                ++fields[part.field][part.words[i]];
+                first_positions.try_emplace(part.words[i], position + i);
+            }
+            position += part.words.size() + 2;
+        }
+    }
+
+    size_t count(size_t field, const std::string &term) const
+    {
+        const auto found = fields[field].find(term);
+        return found == fields[field].end() ? 0 : found->second;
+    }
+
+    size_t observations(ContextField field, const Terms &terms) const
+    {
+        size_t total = 0;
+        for (const auto &term : terms)
+            total += count(field, term);
+        return total;
+    }
+};
+
+struct Components
+{
+    double bm25 = 0;
+    double flags = 0;
+    double phrase = 0;
+    double proximity = 0;
+    double first = 0;
+    double coverage = 0;
+    double passes_all_terms = 0;
+    double total = 0;
+};
+
+struct ComponentField
+{
+    std::string_view name;
+    double Components::*member;
+};
+constexpr std::array<ComponentField, 8> component_fields = {
+    {ComponentField{"bm25", &Components::bm25},
+     {"flags", &Components::flags},
+     {"phrase", &Components::phrase},
+     {"proximity", &Components::proximity},
+     {"first", &Components::first},
+     {"coverage", &Components::coverage},
+     {"passes_all_terms", &Components::passes_all_terms},
+     {"total", &Components::total}}};
+
+struct LexicalEvidence
+{
+    double bm25 = 0;
+    double flags = 0;
+    size_t matched_terms = 0;
+    size_t latest_first_match = 1;
+};
+
+static LexicalEvidence scoreContextTerms(const ContextQuery &query, const ContextCounts &counts,
+                                         const Page &page, const CorpusStatistics &stats)
+{
+    constexpr std::array<double, ContextFieldCount> weights = {2.5, 1.25, 1., .2, .5, 1.5};
+    const Url url(page.url, false);
+    const auto domain = unique(context_terms(url.authority()));
+    const auto path = unique(context_terms(unquote(url.path())));
+    const size_t size =
+        std::max<int64_t>(1, page.size ? page.size : static_cast<int64_t>(page.document.body.size()));
+    LexicalEvidence result;
+    for (const auto &term : query.terms)
+    {
+        double frequency = 0;
+        for (size_t field = 0; field < ContextFieldCount; ++field)
+            frequency += weights[field] * counts.count(field, term);
+        if (frequency > 0)
+        {
+            ++result.matched_terms;
+            result.latest_first_match = std::max(result.latest_first_match, counts.first_positions.at(term));
+        }
+        const auto found = stats.document_frequency.find(term);
+        const double document_frequency =
+            found == stats.document_frequency.end() ? 0 : std::min(found->second, stats.documents);
+        const double idf =
+            std::log1p((stats.documents - document_frequency + .5) / (document_frequency + .5));
+        result.bm25 += idf * (frequency * 2.2) / (frequency + 1.2 * (.5 + .5 * size / 5000.));
+        const double flags = (domain.count(term) ? 3.
+                              : path.count(term) ? 1.
+                                                 : 0.) +
+                             (counts.count(TitleField, term) ? 1.5 : 0.);
+        result.flags += .5 * idf * (flags * 2.2) / (flags + 1.2);
+    }
+    const double normalization = std::sqrt(result.matched_terms + 1.);
+    result.bm25 /= normalization;
+    result.flags /= normalization;
+    return result;
+}
+
+struct PhraseEvidence
+{
+    double score = 0;
+    std::array<bool, ContextFieldCount> matched_fields{};
+};
+
+static PhraseEvidence scoreContextPhrase(const Words &query, const std::vector<ContextPart> &parts)
+{
+    constexpr std::array<double, ContextFieldCount> weights = {3., 1.5, 1., .2, .75, 2.};
+    constexpr std::array<double, ContextFieldCount> attenuation = {1., .5, .5, .3, 1., 1.};
+    std::array<size_t, ContextFieldCount> hits{};
+    size_t title_boundaries = 0;
+    for (const auto &part : parts)
+        for (size_t i = 0; i + query.size() <= part.words.size(); ++i)
+            if (std::equal(query.begin(), query.end(), part.words.begin() + i))
+            {
+                ++hits[part.field];
+                if (part.field == TitleField && (i == 0 || i + query.size() == part.words.size()))
+                    ++title_boundaries;
+            }
+    PhraseEvidence result;
+    for (size_t field = 0; field < ContextFieldCount; ++field)
+        if (hits[field])
+        {
+            result.score +=
+                weights[field] * query.size() * (1 + std::log1p(std::pow(hits[field], attenuation[field])));
+            result.matched_fields[field] = true;
+        }
+    result.score += 1.5 * title_boundaries;
+    return result;
+}
+
+static PhraseEvidence scoreContextWord(const std::string &term, const std::vector<ContextPart> &parts)
+{
+    PhraseEvidence result;
+    size_t exact_headings = 0, boundary_headings = 0, exact_links = 0, partial_links = 0;
+    for (const auto &part : parts)
+    {
+        const auto &words = part.words;
+        if (std::find(words.begin(), words.end(), term) == words.end())
+            continue;
+        const bool boundary = words.front() == term || words.back() == term;
+        switch (part.field)
+        {
+        case TitleField:
+            result.score += words.size() == 1 ? 4. : (boundary ? 2.5 : 1.) / std::sqrt(words.size());
+            result.matched_fields[TitleField] = true;
+            break;
+        case HeadingField:
+            exact_headings += words.size() == 1;
+            boundary_headings += boundary;
+            result.matched_fields[HeadingField] = true;
+            break;
+        case IncomingField:
+            exact_links += words.size() == 1;
+            partial_links += words.size() != 1;
+            result.matched_fields[IncomingField] = true;
+            break;
+        default:
+            break;
+        }
+    }
+    result.score += .75 * std::sqrt(exact_headings) + .75 * std::sqrt(boundary_headings) + 1.5 * exact_links +
+                    .5 * std::sqrt(partial_links);
+    return result;
+}
+
+static double contextWindowProximity(const Terms &terms, const Words &words)
+{
+    std::unordered_map<std::string, size_t> window;
+    size_t left = 0;
+    double best = 0;
+    for (size_t right = 0; right < words.size(); ++right)
+    {
+        if (terms.count(words[right]))
+            ++window[words[right]];
+        while (window.size() == terms.size())
+        {
+            const auto width = right - left + 1;
+            if (width < terms.size() + 8)
+                best = std::max(best, 2 / (.1 + std::sqrt(std::max<size_t>(width - 1, 1))));
+            const auto found = window.find(words[left++]);
+            if (found != window.end() && !--found->second)
+                window.erase(found);
+        }
+    }
+    return best;
+}
+
+static double scoreContextProximity(const Terms &terms, const std::vector<ContextPart> &parts,
+                                    const ContextCounts &counts, const PhraseEvidence &phrase,
+                                    size_t matched_terms)
+{
+    double proximity = 0;
+    if (terms.size() > 2)
+        for (const auto &part : parts)
+            proximity = std::max(proximity, contextWindowProximity(terms, part.words));
+    if (!phrase.matched_fields[TitleField] && matched_terms >= 2 &&
+        counts.observations(TitleField, terms) == matched_terms)
+        proximity += matched_terms * (2.5 + 2. / std::max<size_t>(1, counts.lengths[TitleField]));
+    if (counts.lengths[HeadingField] < 64 && !phrase.matched_fields[HeadingField] && matched_terms &&
+        counts.observations(HeadingField, terms) == matched_terms)
+        proximity += matched_terms;
+    return .5 * proximity;
+}
+
+static Components contextComponents(const ContextQuery &query, const std::vector<ContextPart> &parts,
+                                    const Page &page, const CorpusStatistics &stats)
+{
+    const ContextCounts counts(parts);
+    const auto lexical = scoreContextTerms(query, counts, page, stats);
+    PhraseEvidence phrase;
+    if (query.phrase.size() == 1)
+        phrase = scoreContextWord(query.phrase.front(), parts);
+    else if (query.phrase.size() > 1)
+        phrase = scoreContextPhrase(query.phrase, parts);
+    Components result;
+    result.bm25 = lexical.bm25;
+    result.flags = lexical.flags;
+    result.phrase = phrase.score;
+    result.proximity = scoreContextProximity(query.terms, parts, counts, phrase, lexical.matched_terms);
+    result.first = lexical.matched_terms ? 2.5 / std::sqrt(lexical.latest_first_match) : 0.;
+    result.coverage = double(lexical.matched_terms) / std::max<size_t>(1, query.terms.size());
+    result.passes_all_terms = !query.terms.empty() && lexical.matched_terms == query.terms.size();
+    result.total = result.bm25 + result.flags + result.phrase + result.proximity + result.first;
+    return result;
+}
+
+static void appendContextParts(std::vector<ContextPart> &parts, ContextField field, const std::string &text)
+{
+    for (const auto &line : lines(text))
+    {
+        auto words = context_terms(line);
+        if (!words.empty())
+            parts.push_back({field, std::move(words)});
+    }
+}
+
+static std::vector<ContextPart> localContextParts(const Page &page)
+{
+    std::vector<ContextPart> parts;
+    const auto title = context_terms(page.title);
+    if (page.document.has_explicit_title)
+        appendContextParts(parts, TitleField, page.title);
+    for (const auto &line : lines(page.document.headings))
+        if (!page.document.has_explicit_title || context_terms(line) != title)
+            appendContextParts(parts, HeadingField, line);
+    appendContextParts(parts, BodyField, page.document.body);
+    appendContextParts(parts, OutgoingField, page.document.link_text);
+    const Url url(page.url, false);
+    appendContextParts(parts, AddressField, url.authority() + " " + unquote(url.path()));
+    return parts;
+}
+
+struct IncomingEvidence
+{
+    std::string text;
+    size_t maximum_support = 0;
+};
+
+static IncomingEvidence appendIncomingParts(std::vector<ContextPart> &parts,
+                                            const std::vector<IncomingContext> &incoming)
+{
+    IncomingEvidence result;
+    for (const auto &context : incoming)
+    {
+        if (!result.text.empty())
+            result.text += '\n';
+        result.text += context.text;
+        result.maximum_support = std::max(result.maximum_support, context.independent_sites);
+        const auto repeats =
+            std::clamp<size_t>(static_cast<size_t>(std::sqrt(context.independent_sites)), 1, 12);
+        for (size_t i = 0; i < repeats; ++i)
+            appendContextParts(parts, IncomingField, context.text);
+    }
+    return result;
+}
+
+using ContextValues = std::array<float, context_feature_names.size()>;
+static consteval size_t contextFeatureIndex(std::string_view name)
+{
+    for (size_t i = 0; i < context_feature_names.size(); ++i)
+        if (context_feature_names[i] == name)
+            return i;
+    throw "Unknown incoming150 feature";
+}
+
+static consteval size_t contextFeatureIndex(std::string_view prefix, std::string_view suffix)
+{
+    for (size_t i = 0; i < context_feature_names.size(); ++i)
+    {
+        const auto name = context_feature_names[i];
+        if (name.starts_with(prefix) && name.substr(prefix.size()).starts_with("_") &&
+            name.substr(prefix.size() + 1) == suffix)
+            return i;
+    }
+    throw "Unknown incoming150 feature";
+}
+
+static constexpr auto base_context_columns = []() consteval
+{
+    std::array<size_t, feature_names.size()> columns{};
+    for (size_t i = 0; i < columns.size(); ++i)
+        columns[i] = contextFeatureIndex(feature_names[i]);
+    return columns;
+}();
+
+static constexpr auto anchor_context_columns = []() consteval
+{
+    constexpr auto count = std::count_if(feature_names.begin(), feature_names.end(),
+                                         [](auto name) { return name.starts_with("link_text_"); });
+    std::array<std::pair<size_t, size_t>, count> columns{};
+    size_t next = 0;
+    for (size_t i = 0; i < feature_names.size(); ++i)
+        if (feature_names[i].starts_with("link_text_"))
+            columns[next++] = {i, contextFeatureIndex("m_anchor", feature_names[i].substr(10))};
+    return columns;
+}();
+
+template <FeaturePrefix Prefix, size_t Count = component_fields.size()>
+static void storeComponents(ContextValues &values, const Components &components)
+{
+    static constexpr auto columns = []() consteval
+    {
+        std::array<size_t, Count> result{};
+        for (size_t i = 0; i < Count; ++i)
+            result[i] = contextFeatureIndex(Prefix, component_fields[i].name);
+        return result;
+    }();
+    for (size_t i = 0; i < Count; ++i)
+        values[columns[i]] = components.*component_fields[i].member;
+}
+
+static void storeAnchorFeatures(ContextValues &values, const ContextQuery &query,
+                                const IncomingEvidence &evidence, size_t contexts)
+{
+    Values anchor{};
+    field<"link_text">(anchor, evidence.text, query.anchor_phrase, query.anchor_terms);
+    for (const auto &[source, destination] : anchor_context_columns)
+        values[destination] = anchor[source];
+    values[contextFeatureIndex("m_anchor_contexts_log")] = std::log1p(contexts);
+    values[contextFeatureIndex("m_anchor_max_support_log")] = std::log1p(evidence.maximum_support);
+}
+
+static ContextValues contextFeatureRow(const ContextQuery &query, const Page &page,
+                                       const std::vector<IncomingContext> &incoming,
+                                       const CorpusStatistics &stats, std::span<const float> base)
+{
+    ContextValues values{};
+    for (size_t i = 0; i < base.size(); ++i)
+        values[base_context_columns[i]] = base[i];
+    auto parts = localContextParts(page);
+    const auto local = contextComponents(query, parts, page, stats);
+    const auto evidence = appendIncomingParts(parts, incoming);
+    const auto combined = contextComponents(query, parts, page, stats);
+    Components delta;
+    for (const auto &field : component_fields)
+        delta.*field.member = combined.*field.member - local.*field.member;
+    storeComponents<"m_local">(values, local);
+    storeComponents<"m_incoming">(values, combined);
+    // The feature contract includes deltas for every component except total.
+    storeComponents<"m_delta", component_fields.size() - 1>(values, delta);
+    storeAnchorFeatures(values, query, evidence, incoming.size());
+    return values;
+}
+} // namespace
+
+std::vector<float> context_features(const std::string &query, const std::vector<Page> &items,
+                                    const std::vector<std::vector<IncomingContext>> &incoming,
+                                    const CorpusStatistics &stats,
+                                    const std::vector<RetrievalSignals> &retrieval_context)
+{
+    if (incoming.size() != items.size() || !stats.documents)
+        throw std::invalid_argument("Missing incoming150 context/statistics");
+    const auto base = features(query, items, retrieval_context, 1);
+    const ContextQuery context_query(query);
+    std::vector<float> result;
+    result.reserve(items.size() * context_feature_names.size());
+    for (size_t row = 0; row < items.size(); ++row)
+    {
+        const auto base_row =
+            std::span<const float>(base).subspan(row * feature_names.size(), feature_names.size());
+        const auto values = contextFeatureRow(context_query, items[row], incoming[row], stats, base_row);
         result.insert(result.end(), values.begin(), values.end());
     }
     return result;

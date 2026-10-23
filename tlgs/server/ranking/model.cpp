@@ -1,5 +1,5 @@
 #include "model.hpp"
-#include <tlgsutils/ranking/features.hpp>
+#include <tlgsutils/ranking/context_features.hpp>
 #include <ranker.h>
 #include <stdexcept>
 #include <string>
@@ -7,10 +7,19 @@
 namespace tlgs::ranking
 {
 static_assert(ranker_api::abi_version == 2, "Unsupported model scoring ABI");
-static_assert(ranker_api::feature_count == feature_names.size(), "Model feature count mismatch");
-static_assert(ranker_api::feature_set == feature_set, "Model feature set mismatch");
-static_assert(ranker_api::feature_version == feature_version, "Model feature version mismatch");
-static_assert(ranker_api::feature_names == feature_names, "Model feature names/order mismatch");
+template<class T> consteval bool validContract(const T& names)
+{
+    if constexpr (std::tuple_size_v<T> == context_feature_names.size())
+        return names == context_feature_names && ranker_api::feature_set == context_feature_set &&
+               ranker_api::feature_version == context_feature_version;
+    else if constexpr (std::tuple_size_v<T> == feature_names.size())
+        return names == feature_names && ranker_api::feature_set == feature_set &&
+               ranker_api::feature_version == feature_version;
+    else return false;
+}
+static_assert(validContract(ranker_api::feature_names), "Model feature contract mismatch");
+static_assert(ranker_api::feature_count == ranker_api::feature_names.size());
+size_t model_feature_count() { return ranker_api::feature_count; }
 
 void score_batch(std::span<const float> features, size_t columns, std::span<float> scores)
 {
