@@ -104,7 +104,7 @@ Task<HttpResponsePtr> ToolsController::known_security_txt(HttpRequestPtr req)
 
 Task<HttpResponsePtr> ToolsController::add_seed(HttpRequestPtr req)
 {
-    auto input = utils::urlDecode(req->getParameter("query"));
+    const auto input = req->getParameter("query");
 
     if(input.empty())
     {

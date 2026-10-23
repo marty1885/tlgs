@@ -201,6 +201,10 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
             co_await insert();
         co_await transaction->execSqlCoro("INSERT INTO ranking_incoming_context(url,contexts) SELECT "
                                           "url,contexts FROM ranking_context_build");
+        // Publish usable planner statistics with the rebuilt cache, rather than
+        // waiting for autovacuum while searches can choose full-table scans.
+        co_await transaction->execSqlCoro("ANALYZE ranking_term_frequency");
+        co_await transaction->execSqlCoro("ANALYZE ranking_incoming_context");
         co_await transaction->execSqlCoro(R"sql(
             INSERT INTO ranking_context_state(singleton,ruleset_id,documents,feature_version,snapshot_at)
             VALUES(TRUE,$1,$2,$3,$4::timestamptz)

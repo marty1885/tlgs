@@ -1684,6 +1684,7 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     urls.reserve(candidates.size());
     for (const auto &candidate : candidates)
         urls.push_back(candidate.result.url);
+    const auto pages_started = std::chrono::steady_clock::now();
     const auto rows = co_await fetchSearchPageData(query, urls, PageDataMode::Ranking);
     std::unordered_map<std::string, tlgs::ranking::Page> documents;
     for (const auto &row : rows)
@@ -1712,6 +1713,7 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
                                       fusion_max_site_results_per_page);
     }
     const auto feature_started = std::chrono::steady_clock::now();
+    double context_ms = 0;
     std::vector<float> values;
     const auto columns = tlgs::ranking::model_feature_count();
     if (columns == tlgs::ranking::context_feature_names.size()) {
@@ -1722,11 +1724,13 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
             const auto context = co_await app().getDbClient()->execSqlCoro(R"sql(
                 SELECT s.documents,
                     coalesce((SELECT jsonb_object_agg(f.term,f.documents)
-                        FROM ranking_term_frequency f
-                        JOIN jsonb_array_elements_text($1::jsonb) q(term) ON q.term=f.term),'{}'::jsonb)::text AS df,
+                        FROM jsonb_array_elements_text($1::jsonb) q(term)
+                        CROSS JOIN LATERAL (SELECT term,documents FROM ranking_term_frequency
+                            WHERE term=q.term LIMIT 1) f),'{}'::jsonb)::text AS df,
                     coalesce((SELECT jsonb_object_agg(c.url,c.contexts)
-                        FROM ranking_incoming_context c
-                        JOIN jsonb_array_elements_text($2::jsonb) q(url) ON q.url=c.url),'{}'::jsonb)::text AS incoming
+                        FROM jsonb_array_elements_text($2::jsonb) q(url)
+                        CROSS JOIN LATERAL (SELECT url,contexts FROM ranking_incoming_context
+                            WHERE url=q.url LIMIT 1) c),'{}'::jsonb)::text AS incoming
                 FROM ranking_context_state s JOIN site_identity_state i
                   ON i.singleton AND i.active_ruleset_id=s.ruleset_id
                 WHERE s.singleton AND s.feature_version=1
@@ -1745,6 +1749,8 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
                         contexts.push_back({c.at(0).get<std::string>(), c.at(1).get<size_t>()});
                 incoming.push_back(std::move(contexts));
             }
+            context_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - feature_started).count();
             values = tlgs::ranking::context_features(query,items,incoming,stats,retrieval_context);
         } catch (const std::exception& error) {
             LOG_WARN << "Incoming ranking unavailable; using fusion: " << error.what();
@@ -1758,8 +1764,11 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     const auto score_started = std::chrono::steady_clock::now();
     tlgs::ranking::score_batch(values, columns, scores);
     const auto score_finished = std::chrono::steady_clock::now();
-    LOG_INFO << "Learned search: " << items.size() << " candidates; features "
-             << std::chrono::duration<double, std::milli>(score_started - feature_started).count()
+    LOG_INFO << "Learned search: " << items.size() << " candidates; retrieval "
+             << batch.total_ms << "ms, pages "
+             << std::chrono::duration<double, std::milli>(feature_started - pages_started).count()
+             << "ms, context " << context_ms << "ms, features "
+             << std::chrono::duration<double, std::milli>(score_started - feature_started).count() - context_ms
              << "ms, model "
              << std::chrono::duration<double, std::milli>(score_finished - score_started).count()
              << "ms, total "

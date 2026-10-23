@@ -237,9 +237,7 @@ std::string tlgs::urlEncode(const std::string_view src)
 
     for (char ch : src)
     {
-        if (ch == ' ')
-            result.append(1, '+');
-        else if (std::isalnum(static_cast<unsigned char>(ch)) || symbols.find(ch) != std::string_view::npos)
+        if (std::isalnum(static_cast<unsigned char>(ch)) || symbols.find(ch) != std::string_view::npos)
             result.append(1, ch);
         else
         {
