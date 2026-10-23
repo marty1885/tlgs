@@ -1773,7 +1773,17 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
              << std::chrono::duration<double, std::milli>(score_finished - score_started).count()
              << "ms, total "
              << std::chrono::duration<double, std::milli>(score_finished - started).count() << "ms";
-    co_return orderLTRResults(std::move(candidates), scores);
+    auto results = orderLTRResults(std::move(candidates), scores);
+    // Bound expensive feature extraction, not the number of searchable results.
+    // Keep the unscored remainder in its existing fusion order for pagination.
+    const std::unordered_set<std::string> reranked(urls.begin(), urls.end());
+    auto remainder = finishFusionResults(std::move(batch.candidates), query,
+                                         fusion_max_site_results_per_page);
+    results.reserve(results.size() + remainder.size());
+    for (auto &result : remainder)
+        if (!reranked.contains(result.url))
+            results.push_back(std::move(result));
+    co_return results;
 #endif
 }
 
