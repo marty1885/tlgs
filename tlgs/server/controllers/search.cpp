@@ -211,6 +211,78 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FilterConstrant, value, negate)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SizeConstrant, size, greater)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SearchFilter, content_type, domain, size, title)
 
+// Include only active predicates so generic plans do not compile unrelated JSON subplans.
+static std::string searchFilterSql(const SearchFilter &filter)
+{
+    std::string sql;
+    if (!filter.content_type.empty())
+        sql += R"sql( AND (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                WHERE (item->>'negate')::boolean
+                  AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
+                )
+            )
+        ))sql";
+    if (!filter.domain.empty())
+        sql += R"sql( AND (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                WHERE (item->>'negate')::boolean
+                  AND lower(pages.domain_name)=lower(item->>'value')
+            )
+            AND (
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                )
+                OR EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
+                    WHERE NOT (item->>'negate')::boolean
+                      AND lower(pages.domain_name)=lower(item->>'value')
+                )
+            )
+        ))sql";
+    if (!filter.size.empty())
+        sql += R"sql( AND (
+            pages.size > 0
+                AND coalesce(pages.size > (
+                    SELECT max((item->>'size')::bigint)
+                    FROM jsonb_array_elements(filters.value->'size') item
+                    WHERE (item->>'greater')::boolean
+                ), TRUE)
+                AND coalesce(pages.size < (
+                    SELECT min((item->>'size')::bigint)
+                    FROM jsonb_array_elements(filters.value->'size') item
+                    WHERE NOT (item->>'greater')::boolean
+                ), TRUE)
+        ))sql";
+    if (!filter.title.empty())
+        sql += R"sql( AND (
+            NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE (item->>'negate')::boolean
+                  AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
+                WHERE NOT (item->>'negate')::boolean
+                  AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
+            )
+        ))sql";
+    return sql;
+}
+
 struct SearchCacheKey
 {
     SearchCacheKey(const std::string& query, const SearchFilter& filter, RankingAlgorithm ranking);
@@ -788,8 +860,9 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
     const auto search_started = Clock::now();
     auto db = app().getDbClient();
     const auto filter_json = nlohmann::json(filter).dump();
+    const auto filter_sql = searchFilterSql(filter);
     auto fts_task = executeTimed(
-        [db, query_str, filter_json, filter_empty=filter.empty(),
+        [db, query_str, filter_json, filter_sql, filter_empty=filter.empty(),
          site_candidate_limit=std::any_of(filter.domain.begin(), filter.domain.end(),
              [](const auto& domain) { return !domain.negate; })
              ? fusion_candidate_limit : fusion_max_site_candidates]() -> Task<orm::Result> {
@@ -798,7 +871,9 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         const auto bm25_started = Clock::now();
         const auto bm25_rows = filter_empty
             ? co_await db->execSqlCoro(R"sql(
-        SELECT pages.url, bm25_get_current_score() AS bm25_distance
+        SELECT pages.url, bm25_get_current_score() AS bm25_distance,
+               concat('gemini://', lower(pages.domain_name),
+                      CASE WHEN pages.port = 1965 THEN '' ELSE ':' || pages.port::text END) AS physical_site
         FROM pages
         ORDER BY public.tlgs_bm25_document(
                      pages.title, pages.search_headings, pages.search_link_text,
@@ -807,66 +882,13 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         LIMIT $2
     )sql", query_str, fusion_bm25_candidate_limit)
             : co_await db->execSqlCoro(R"sql(
-        SELECT pages.url, bm25_get_current_score() AS bm25_distance
+        SELECT pages.url, bm25_get_current_score() AS bm25_distance,
+               concat('gemini://', lower(pages.domain_name),
+                      CASE WHEN pages.port = 1965 THEN '' ELSE ':' || pages.port::text END) AS physical_site
         FROM pages
         CROSS JOIN (SELECT $3::jsonb AS value) filters
-        WHERE (jsonb_array_length(filters.value->'content_type')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                WHERE (item->>'negate')::boolean
-                  AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-            )
-            AND (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                    WHERE NOT (item->>'negate')::boolean
-                )
-                OR EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                    WHERE NOT (item->>'negate')::boolean
-                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-                )
-            )
-          ))
-          AND (jsonb_array_length(filters.value->'domain')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                WHERE (item->>'negate')::boolean
-                  AND lower(pages.domain_name)=lower(item->>'value')
-            )
-            AND (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                    WHERE NOT (item->>'negate')::boolean
-                )
-                OR EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                    WHERE NOT (item->>'negate')::boolean
-                      AND lower(pages.domain_name)=lower(item->>'value')
-                )
-            )
-          ))
-          AND (
-            jsonb_array_length(filters.value->'size')=0
-            OR (pages.size > 0 AND NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
-                WHERE CASE WHEN (item->>'greater')::boolean
-                           THEN pages.size <= (item->>'size')::bigint
-                           ELSE pages.size >= (item->>'size')::bigint END
-            ))
-          )
-          AND (jsonb_array_length(filters.value->'title')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                WHERE (item->>'negate')::boolean
-                  AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                WHERE NOT (item->>'negate')::boolean
-                  AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
-            )
-          ))
+        WHERE TRUE
+    )sql" + filter_sql + R"sql(
         ORDER BY public.tlgs_bm25_document(
                      pages.title, pages.search_headings, pages.search_link_text,
                      pages.url, pages.content_body) <@>
@@ -883,69 +905,45 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         for(const auto& row : bm25_rows)
             bm25_candidates.push_back({
                 {"url", row["url"].as<std::string>()},
-                {"bm25_distance", row["bm25_distance"].as<double>()}
+                {"bm25_distance", row["bm25_distance"].as<double>()},
+                {"physical_site", row["physical_site"].as<std::string>()}
             });
         auto ranked_rows = co_await db->execSqlCoro(R"sql(
-        WITH active AS (
-            SELECT (
-                SELECT active_ruleset_id
-                FROM site_identity_state
-                WHERE singleton=TRUE
-            ) AS ruleset_id
-        ), retrieved AS MATERIALIZED (
-            SELECT url, bm25_distance
+        WITH mapped AS (
+            SELECT bm25.url, -bm25.bm25_distance AS fts_score,
+                   coalesce(target_map.site_key, bm25.physical_site) AS target_site
             FROM jsonb_to_recordset($1::jsonb)
-                 AS bm25(url text, bm25_distance double precision)
-        ), lexical_scored AS (
-            SELECT pages.url, pages.content_type, pages.size,
-                   pages.indexed_content_hash AS content_hash,
-                   concat('gemini://', lower(pages.domain_name),
-                          CASE WHEN pages.port = 1965 THEN ''
-                               ELSE ':' || pages.port::text END) AS physical_site,
-                   -- BM25 already weights title/headings; avoid a second title bonus.
-                   -retrieved.bm25_distance AS fts_score
-            FROM retrieved
-            JOIN pages ON pages.url=retrieved.url
-            WHERE retrieved.bm25_distance < 0
-        ), lexical_pool AS MATERIALIZED (
-            SELECT * FROM lexical_scored
+                 AS bm25(url text, bm25_distance double precision, physical_site text)
+            LEFT JOIN url_site_map target_map
+              ON target_map.ruleset_id=(
+                  SELECT active_ruleset_id FROM site_identity_state WHERE singleton=TRUE
+              ) AND target_map.url=bm25.url
+            WHERE bm25.bm25_distance < 0
+        ), site_ranked AS (
+            SELECT mapped.*,
+                   row_number() OVER (
+                       PARTITION BY target_site ORDER BY fts_score DESC, url
+                   ) AS site_rank
+            FROM mapped
+        ), limited AS MATERIALIZED (
+            -- Explicit domain searches retain their full candidate depth.
+            SELECT url, fts_score, target_site
+            FROM site_ranked
+            WHERE site_rank <= $3::bigint
             ORDER BY fts_score DESC, url
             LIMIT $2
-        ), lexical_mapped AS MATERIALIZED (
-            SELECT lexical_pool.*,
-                   coalesce(target_map.site_key, lexical_pool.physical_site) AS target_site
-            FROM lexical_pool
-            CROSS JOIN active
-            LEFT JOIN url_site_map target_map
-              ON target_map.ruleset_id=active.ruleset_id
-             AND target_map.url=lexical_pool.url
-        ), lexical_site_ranked AS MATERIALIZED (
-            SELECT lexical_mapped.*,
-                   row_number() OVER (
-                       PARTITION BY target_site
-                       ORDER BY fts_score DESC, url
-                   ) AS lexical_site_rank
-            FROM lexical_mapped
-        ), lexical AS MATERIALIZED (
-            -- Bound each site's candidate share; explicit domain searches keep their depth.
-            -- Soft site decay is applied after fusion, not at both stages.
-            SELECT lexical_site_ranked.*
-            FROM lexical_site_ranked
-            WHERE lexical_site_rank <= $4::bigint
-            ORDER BY fts_score DESC, url
-            LIMIT $3
-        ), candidates AS MATERIALIZED (
-            SELECT lexical.*,
-                   row_number() OVER (ORDER BY fts_score DESC, url) AS fts_rank
-            FROM lexical
+        ), candidates AS (
+            SELECT limited.*, row_number() OVER (ORDER BY fts_score DESC, url) AS fts_rank
+            FROM limited
         )
-        SELECT candidates.url, candidates.content_type, candidates.size,
-               candidates.content_hash, candidates.target_site,
+        -- BM25 already read the physical site. Fetch page metadata only for survivors.
+        SELECT candidates.url, pages.content_type, pages.size,
+               pages.indexed_content_hash AS content_hash, candidates.target_site,
                candidates.fts_rank, candidates.fts_score
         FROM candidates
+        JOIN pages ON pages.url=candidates.url
         ORDER BY candidates.fts_rank
-    )sql", bm25_candidates.dump(), fusion_bm25_candidate_limit, fusion_candidate_limit,
-        site_candidate_limit);
+    )sql", bm25_candidates.dump(), fusion_candidate_limit, site_candidate_limit);
         const auto ranked_finished = Clock::now();
         LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -957,7 +955,7 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
     });
 
     auto hilltop_task = executeTimed(
-        [db, query_str, filter_json, filter_empty=filter.empty()]() {
+        [db, query_str, filter_json, filter_sql, filter_empty=filter.empty()]() {
         return db->execSqlCoro(R"sql(
         WITH query AS (
             SELECT websearch_to_tsquery('simple', $1) AS value
@@ -1012,70 +1010,15 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         JOIN pages ON pages.url=ranked_limited.target_url
         CROSS JOIN filters
         WHERE pages.last_indexed_at IS NOT NULL
-          AND (jsonb_array_length(filters.value->'content_type')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                WHERE (item->>'negate')::boolean
-                  AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-            )
-            AND (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                    WHERE NOT (item->>'negate')::boolean
-                )
-                OR EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'content_type') item
-                    WHERE NOT (item->>'negate')::boolean
-                      AND coalesce(pages.content_type, '') LIKE item->>'value' || '%'
-                )
-            )
-          ))
-          AND (jsonb_array_length(filters.value->'domain')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                WHERE (item->>'negate')::boolean
-                  AND lower(pages.domain_name)=lower(item->>'value')
-            )
-            AND (
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                    WHERE NOT (item->>'negate')::boolean
-                )
-                OR EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(filters.value->'domain') item
-                    WHERE NOT (item->>'negate')::boolean
-                      AND lower(pages.domain_name)=lower(item->>'value')
-                )
-            )
-          ))
-          AND (
-            jsonb_array_length(filters.value->'size')=0
-            OR (pages.size > 0 AND NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'size') item
-                WHERE CASE WHEN (item->>'greater')::boolean
-                           THEN pages.size <= (item->>'size')::bigint
-                           ELSE pages.size >= (item->>'size')::bigint END
-            ))
-          )
-          AND (jsonb_array_length(filters.value->'title')=0 OR (
-            NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                WHERE (item->>'negate')::boolean
-                  AND pages.title_vector @@ websearch_to_tsquery('simple', item->>'value')
-            )
-            AND NOT EXISTS (
-                SELECT 1 FROM jsonb_array_elements(filters.value->'title') item
-                WHERE NOT (item->>'negate')::boolean
-                  AND NOT (pages.title_vector @@ websearch_to_tsquery('simple', item->>'value'))
-            )
-          ))
+    )sql" + filter_sql + R"sql(
         ORDER BY ranked_limited.graph_rank, ranked_limited.target_url
         LIMIT $2
     )sql", query_str, fusion_graph_candidate_limit, filter_json, filter_empty);
     });
 
-    auto fts_query = co_await std::move(fts_task);
-    auto hilltop_query = co_await std::move(hilltop_task);
+    // Tasks are lazy: awaiting them separately serializes independent retrieval queries.
+    auto [fts_query, hilltop_query] =
+        co_await when_all(std::move(fts_task), std::move(hilltop_task));
     const auto& rows = *fts_query.rows;
     const auto& authority_rows = *hilltop_query.rows;
 
@@ -1133,14 +1076,17 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         ++graph_only_candidates;
     }
 
+    const auto total_ms =
+        std::chrono::duration<double, std::milli>(Clock::now() - search_started).count();
     LOG_DEBUG << "Search retrieval: " << rows.size() << " lexical candidates, "
               << authority_rows.size() << " Hilltop targets, " << graph_only_candidates
-              << " graph-only candidates";
+              << " graph-only candidates; lexical " << fts_query.duration.count()
+              << "ms, Hilltop " << hilltop_query.duration.count() << "ms, wall " << total_ms << "ms";
     co_return RetrievalBatch {
         .candidates = std::move(candidates),
         .bm25_ms = static_cast<double>(fts_query.duration.count()),
         .hilltop_ms = static_cast<double>(hilltop_query.duration.count()),
-        .total_ms = std::chrono::duration<double,std::milli>(Clock::now()-search_started).count()
+        .total_ms = total_ms
     };
 }
 
