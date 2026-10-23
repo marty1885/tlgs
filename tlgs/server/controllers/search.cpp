@@ -1444,21 +1444,23 @@ static SearchResult makeSearchResult(const orm::Row& page, double score = 0)
 
 // Both renderers fetch page data here. Raw mode adds bounded indexed fields;
 // ordinary search computes the same query-aware preview for Gemini and JSON.
-enum class PageDataMode { Rendered, Raw, Ranking };
+enum class PageDataMode { Results, RawDocuments, RankingDocuments };
 
 static Task<orm::Result> fetchSearchPageData(
     const std::string& query, const std::vector<std::string>& urls,
-    PageDataMode mode = PageDataMode::Rendered)
+    PageDataMode mode = PageDataMode::Results)
 {
-    const bool raw = mode != PageDataMode::Rendered;
+    const bool include_document_fields = mode != PageDataMode::Results;
     co_return co_await app().getDbClient()->execSqlCoro(R"sql(
-            WITH headline_queries AS MATERIALIZED (
+            WITH options AS (
+                SELECT $3::boolean AS document_fields, $4::boolean AS link_arrays
+            ), headline_queries AS MATERIALIZED (
                 SELECT websearch_to_tsquery('english', $1) AS english_partial,
                        websearch_to_tsquery('simple', $1) AS simple_partial
             )
             SELECT pages.url, pages.size, pages.title, pages.content_type,
                    left(coalesce(pages.title,''),1024) AS bounded_title,
-                   CASE WHEN $3::boolean THEN ''
+                   CASE WHEN options.document_fields THEN ''
                         WHEN pages.lang IS NULL
                                   OR lower(split_part(pages.lang, ',', 1)) ~ '^en([_-]|$)'
                         THEN ts_headline('english',
@@ -1470,37 +1472,38 @@ static Task<orm::Result> fetchSearchPageData(
                                          headline_queries.simple_partial,
                                          'HighlightAll=true, StartSel="' || chr(30) || '", StopSel="' || chr(31) || '"') END AS preview,
                    pages.last_crawl_success_at,
-                   CASE WHEN $3::boolean THEN coalesce(raw_content_hash,'') END AS raw_hash,
-                   CASE WHEN $3::boolean THEN coalesce(indexed_content_hash,'') END AS indexed_hash,
-                   CASE WHEN $3::boolean THEN coalesce(has_explicit_title,false) END AS explicit_title,
-                   CASE WHEN $3::boolean THEN coalesce(lang,'') END AS language,
-                   CASE WHEN $3::boolean THEN left(coalesce(search_headings,''),4096) END AS headings,
-                   CASE WHEN $3::boolean THEN left(coalesce(content_body,''),32768) END AS body,
-                   CASE WHEN $3::boolean THEN left(coalesce(search_link_text,''),8192) END AS link_text,
-                   CASE WHEN $3::boolean THEN length(coalesce(title,''))>1024 END AS title_truncated,
-                   CASE WHEN $3::boolean THEN length(coalesce(search_headings,''))>4096 END AS headings_truncated,
-                   CASE WHEN $3::boolean THEN length(coalesce(content_body,''))>32768 END AS body_truncated,
-                   CASE WHEN $3::boolean THEN length(coalesce(search_link_text,''))>8192 END AS link_text_truncated,
-                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(cross_site_links::jsonb)='array'
-                                THEN jsonb_array_length(cross_site_links::jsonb)>200
+                   CASE WHEN options.document_fields THEN coalesce(raw_content_hash,'') END AS raw_hash,
+                   CASE WHEN options.document_fields THEN coalesce(indexed_content_hash,'') END AS indexed_hash,
+                   CASE WHEN options.document_fields THEN coalesce(has_explicit_title,false) END AS explicit_title,
+                   CASE WHEN options.document_fields THEN coalesce(lang,'') END AS language,
+                   CASE WHEN options.document_fields THEN left(coalesce(search_headings,''),4096) END AS headings,
+                   CASE WHEN options.document_fields THEN left(coalesce(content_body,''),32768) END AS body,
+                   CASE WHEN options.document_fields THEN left(coalesce(search_link_text,''),8192) END AS link_text,
+                   CASE WHEN options.document_fields THEN length(left(coalesce(title,''),1025))>1024 END AS title_truncated,
+                   CASE WHEN options.document_fields THEN length(left(coalesce(search_headings,''),4097))>4096 END AS headings_truncated,
+                   CASE WHEN options.document_fields THEN length(left(coalesce(content_body,''),32769))>32768 END AS body_truncated,
+                   CASE WHEN options.document_fields THEN length(left(coalesce(search_link_text,''),8193))>8192 END AS link_text_truncated,
+                   CASE WHEN options.document_fields THEN CASE WHEN json_typeof(cross_site_links)='array'
+                                THEN json_array_length(cross_site_links)>200
                                 ELSE false END END AS external_links_truncated,
-                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(internal_links::jsonb)='array'
-                                THEN jsonb_array_length(internal_links::jsonb)>200
+                   CASE WHEN options.document_fields THEN CASE WHEN json_typeof(internal_links)='array'
+                                THEN json_array_length(internal_links)>200
                                 ELSE false END END AS internal_links_truncated,
-                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(cross_site_links::jsonb)='array'
-                                THEN least(jsonb_array_length(cross_site_links::jsonb),200)
+                   CASE WHEN options.document_fields THEN CASE WHEN json_typeof(cross_site_links)='array'
+                                THEN least(json_array_length(cross_site_links),200)
                                 ELSE 0 END END AS external_link_count,
-                   CASE WHEN $3::boolean THEN CASE WHEN jsonb_typeof(internal_links::jsonb)='array'
-                                THEN least(jsonb_array_length(internal_links::jsonb),200)
+                   CASE WHEN options.document_fields THEN CASE WHEN json_typeof(internal_links)='array'
+                                THEN least(json_array_length(internal_links),200)
                                 ELSE 0 END END AS internal_link_count,
-                   CASE WHEN $4::boolean THEN jsonb_path_query_array(coalesce(cross_site_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS external_links,
-                   CASE WHEN $4::boolean THEN jsonb_path_query_array(coalesce(internal_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS internal_links
+                   CASE WHEN options.link_arrays THEN jsonb_path_query_array(coalesce(cross_site_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS external_links,
+                   CASE WHEN options.link_arrays THEN jsonb_path_query_array(coalesce(internal_links::jsonb,'[]'::jsonb), '$[0 to 199]')::text END AS internal_links
             FROM pages
             JOIN jsonb_array_elements_text($2::jsonb) AS requested(url)
               ON requested.url=pages.url
             CROSS JOIN headline_queries
+            CROSS JOIN options
         )sql",
-        tlgs::highlightQuery(query), nlohmann::json(urls).dump(), raw, mode == PageDataMode::Raw);
+        tlgs::highlightQuery(query), nlohmann::json(urls).dump(), include_document_fields, mode == PageDataMode::RawDocuments);
 }
 
 static tlgs::ranking::Document readSearchDocument(const orm::Row& row)
@@ -1647,7 +1650,7 @@ static SearchPageItem readSearchPage(const orm::Row& row, PageDataMode mode)
     item.title = row["bounded_title"].as<std::string>();
     item.content_type = row["content_type"].isNull() ? "" : row["content_type"].as<std::string>();
     item.size = row["size"].as<int64_t>();
-    if (mode == PageDataMode::Raw) {
+    if (mode == PageDataMode::RawDocuments) {
         item.document = RawSearchDocument{
             .fields = readSearchDocument(row),
             .external_links = nlohmann::json::parse(row["external_links"].as<std::string>()).get<std::vector<std::string>>(),
@@ -1661,6 +1664,87 @@ static SearchPageItem readSearchPage(const orm::Row& row, PageDataMode mode)
     return item;
 }
 
+#ifdef TLGS_ENABLE_LEARNED_RANKING
+static Task<std::vector<tlgs::ranking::Page>>
+loadRankingPages(const std::string &query, const std::vector<std::string> &urls,
+                 const std::vector<RetrievalCandidate> &shortlist)
+{
+    const auto rows = co_await fetchSearchPageData(query, urls, PageDataMode::RankingDocuments);
+    std::unordered_map<std::string, tlgs::ranking::Page> pages_by_url;
+    for (const auto &row : rows)
+    {
+        auto page = readRankingPage(row);
+        pages_by_url.emplace(page.url, std::move(page));
+    }
+
+    std::vector<tlgs::ranking::Page> pages;
+    pages.reserve(shortlist.size());
+    for (const auto &candidate : shortlist)
+    {
+        auto found = pages_by_url.find(candidate.result.url);
+        // Do not score a crawler update with retrieval data from the old page.
+        if (found == pages_by_url.end() ||
+            found->second.document.indexed_content_hash != candidate.indexed_content_hash)
+            co_return std::vector<tlgs::ranking::Page>{};
+        auto page = std::move(found->second);
+        page.site = candidate.result.logical_site;
+        page.retrieval = retrievalSignals(candidate);
+        pages.push_back(std::move(page));
+    }
+    co_return pages;
+}
+
+struct RankingContext
+{
+    tlgs::ranking::CorpusStatistics statistics;
+    std::vector<std::vector<tlgs::ranking::IncomingContext>> incoming_links;
+};
+
+static Task<RankingContext> loadRankingContext(const std::string &query, const std::vector<std::string> &urls)
+{
+    // Read term frequencies, incoming links and metadata from one MVCC snapshot.
+    // LIMIT 1 keeps each requested key as an indexed lookup with stale statistics too.
+    const auto rows = co_await app().getDbClient()->execSqlCoro(
+        R"sql(
+        SELECT state.documents,
+            coalesce((SELECT jsonb_object_agg(frequency.term,frequency.documents)
+                FROM jsonb_array_elements_text($1::jsonb) requested(term)
+                CROSS JOIN LATERAL (
+                    SELECT term,documents FROM ranking_term_frequency
+                    WHERE term=requested.term LIMIT 1
+                ) frequency),'{}'::jsonb)::text AS document_frequencies,
+            coalesce((SELECT jsonb_object_agg(incoming.url,incoming.contexts)
+                FROM jsonb_array_elements_text($2::jsonb) requested(url)
+                CROSS JOIN LATERAL (
+                    SELECT url,contexts FROM ranking_incoming_context
+                    WHERE url=requested.url LIMIT 1
+                ) incoming),'{}'::jsonb)::text AS incoming_links
+        FROM ranking_context_state state JOIN site_identity_state identity
+          ON identity.singleton AND identity.active_ruleset_id=state.ruleset_id
+        WHERE state.singleton AND state.feature_version=1
+    )sql",
+        nlohmann::json(tlgs::ranking::context_terms(query)).dump(), nlohmann::json(urls).dump());
+    if (rows.empty())
+        throw std::runtime_error("Ranking context is missing or uses an obsolete site ruleset");
+
+    RankingContext context;
+    context.statistics.documents = rows[0]["documents"].as<size_t>();
+    context.statistics.document_frequency =
+        nlohmann::json::parse(rows[0]["document_frequencies"].as<std::string>())
+            .get<std::unordered_map<std::string, size_t>>();
+    const auto incoming_by_url = nlohmann::json::parse(rows[0]["incoming_links"].as<std::string>());
+    context.incoming_links.reserve(urls.size());
+    for (const auto &url : urls)
+    {
+        auto &links = context.incoming_links.emplace_back();
+        const auto found = incoming_by_url.find(url);
+        if (found != incoming_by_url.end())
+            for (const auto &link : *found)
+                links.push_back({link.at(0).get<std::string>(), link.at(1).get<size_t>()});
+    }
+    co_return context;
+}
+#endif
 
 Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::string &query,
                                                                 const SearchFilter &filter)
@@ -1669,119 +1753,77 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     throw std::logic_error("learned ranking is unavailable");
     co_return std::vector<RankedResult>{};
 #else
-    const auto started = std::chrono::steady_clock::now();
+    using Clock = std::chrono::steady_clock;
+    const auto elapsed_ms = [](Clock::time_point start, Clock::time_point end)
+    { return std::chrono::duration<double, std::milli>(end - start).count(); };
+    const auto started = Clock::now();
     auto batch = co_await retrieveCandidates(query, filter);
     if (batch.candidates.empty())
         co_return std::vector<RankedResult>{};
-    // Normalize features against the full retrieval pool, even when reranking a shortlist.
-    std::vector<tlgs::ranking::RetrievalSignals> retrieval_context;
-    retrieval_context.reserve(batch.candidates.size());
+
+    // Feature normalization uses the full pool, even though only a shortlist is scored.
+    std::vector<tlgs::ranking::RetrievalSignals> pool_signals;
+    pool_signals.reserve(batch.candidates.size());
     for (const auto &candidate : batch.candidates)
-        retrieval_context.push_back(retrievalSignals(candidate));
+        pool_signals.push_back(retrievalSignals(candidate));
     rankFusionCandidates(batch.candidates, fusion_graph_weight, fusion_site_decay);
-    auto candidates = selectRerankingCandidates(batch.candidates);
+    auto shortlist = selectRerankingCandidates(batch.candidates);
     std::vector<std::string> urls;
-    urls.reserve(candidates.size());
-    for (const auto &candidate : candidates)
+    urls.reserve(shortlist.size());
+    for (const auto &candidate : shortlist)
         urls.push_back(candidate.result.url);
-    const auto pages_started = std::chrono::steady_clock::now();
-    const auto rows = co_await fetchSearchPageData(query, urls, PageDataMode::Ranking);
-    std::unordered_map<std::string, tlgs::ranking::Page> documents;
-    for (const auto &row : rows)
+
+    const auto pages_started = Clock::now();
+    const auto pages = co_await loadRankingPages(query, urls, shortlist);
+    const auto pages_finished = Clock::now();
+    if (pages.size() != shortlist.size())
     {
-        auto item = readRankingPage(row);
-        documents.emplace(item.url, std::move(item));
-    }
-    std::vector<tlgs::ranking::Page> items;
-    items.reserve(candidates.size());
-    for (const auto& candidate : candidates)
-    {
-        auto found = documents.find(candidate.result.url);
-        if (found == documents.end())
-            break;
-        auto item = std::move(found->second);
-        // A changed crawler snapshot must not be scored with stale retrieval data.
-        if (item.document.indexed_content_hash != candidate.indexed_content_hash)
-            break;
-        item.site = candidate.result.logical_site;
-        item.retrieval = retrievalSignals(candidate);
-        items.push_back(std::move(item));
-    }
-    if (items.size() != candidates.size()) {
         LOG_WARN << "Ranking pages changed after retrieval; using the existing fusion results";
-        co_return finishFusionResults(std::move(batch.candidates), query,
-                                      fusion_max_site_results_per_page);
+        co_return finishFusionResults(std::move(batch.candidates), query, fusion_max_site_results_per_page);
     }
-    const auto feature_started = std::chrono::steady_clock::now();
-    double context_ms = 0;
-    std::vector<float> values;
-    const auto columns = tlgs::ranking::model_feature_count();
-    if (columns == tlgs::ranking::context_feature_names.size()) {
-        // One statement gives frequencies, contexts and their metadata the same
-        // MVCC snapshot, even while the offline refresh atomically replaces them.
-        try {
-            const auto terms = tlgs::ranking::context_terms(query);
-            const auto context = co_await app().getDbClient()->execSqlCoro(R"sql(
-                SELECT s.documents,
-                    coalesce((SELECT jsonb_object_agg(f.term,f.documents)
-                        FROM jsonb_array_elements_text($1::jsonb) q(term)
-                        CROSS JOIN LATERAL (SELECT term,documents FROM ranking_term_frequency
-                            WHERE term=q.term LIMIT 1) f),'{}'::jsonb)::text AS df,
-                    coalesce((SELECT jsonb_object_agg(c.url,c.contexts)
-                        FROM jsonb_array_elements_text($2::jsonb) q(url)
-                        CROSS JOIN LATERAL (SELECT url,contexts FROM ranking_incoming_context
-                            WHERE url=q.url LIMIT 1) c),'{}'::jsonb)::text AS incoming
-                FROM ranking_context_state s JOIN site_identity_state i
-                  ON i.singleton AND i.active_ruleset_id=s.ruleset_id
-                WHERE s.singleton AND s.feature_version=1
-            )sql", nlohmann::json(terms).dump(), nlohmann::json(urls).dump());
-            if (context.empty()) throw std::runtime_error("Incoming ranking cache is missing or uses an obsolete site ruleset");
-            tlgs::ranking::CorpusStatistics stats;
-            stats.documents = context[0]["documents"].as<size_t>();
-            stats.document_frequency = nlohmann::json::parse(context[0]["df"].as<std::string>())
-                .get<std::unordered_map<std::string,size_t>>();
-            const auto cached = nlohmann::json::parse(context[0]["incoming"].as<std::string>());
-            std::vector<std::vector<tlgs::ranking::IncomingContext>> incoming;
-            for (const auto& item : items) {
-                std::vector<tlgs::ranking::IncomingContext> contexts;
-                if (cached.contains(item.url))
-                    for (const auto& c : cached.at(item.url))
-                        contexts.push_back({c.at(0).get<std::string>(), c.at(1).get<size_t>()});
-                incoming.push_back(std::move(contexts));
-            }
-            context_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - feature_started).count();
-            values = tlgs::ranking::context_features(query,items,incoming,stats,retrieval_context);
-        } catch (const std::exception& error) {
+
+    auto context_finished = pages_finished;
+    std::vector<float> feature_values;
+    const auto feature_count = tlgs::ranking::model_feature_count();
+    if (feature_count == tlgs::ranking::context_feature_names.size())
+    {
+        try
+        {
+            const auto context = co_await loadRankingContext(query, urls);
+            context_finished = Clock::now();
+            feature_values = tlgs::ranking::context_features(query, pages, context.incoming_links,
+                                                             context.statistics, pool_signals);
+        }
+        catch (const std::exception &error)
+        {
             LOG_WARN << "Incoming ranking unavailable; using fusion: " << error.what();
         }
-        if (values.empty())
-            co_return finishFusionResults(std::move(batch.candidates),query,fusion_max_site_results_per_page);
-    } else {
-        values = tlgs::ranking::features(query,items,retrieval_context);
+        if (feature_values.empty())
+            co_return finishFusionResults(std::move(batch.candidates), query,
+                                          fusion_max_site_results_per_page);
     }
-    std::vector<float> scores(items.size());
-    const auto score_started = std::chrono::steady_clock::now();
-    tlgs::ranking::score_batch(values, columns, scores);
-    const auto score_finished = std::chrono::steady_clock::now();
-    LOG_INFO << "Learned search: " << items.size() << " candidates; retrieval "
-             << batch.total_ms << "ms, pages "
-             << std::chrono::duration<double, std::milli>(feature_started - pages_started).count()
-             << "ms, context " << context_ms << "ms, features "
-             << std::chrono::duration<double, std::milli>(score_started - feature_started).count() - context_ms
-             << "ms, model "
-             << std::chrono::duration<double, std::milli>(score_finished - score_started).count()
-             << "ms, total "
-             << std::chrono::duration<double, std::milli>(score_finished - started).count() << "ms";
-    auto results = orderLTRResults(std::move(candidates), scores);
-    // Bound expensive feature extraction, not the number of searchable results.
-    // Keep the unscored remainder in its existing fusion order for pagination.
-    const std::unordered_set<std::string> reranked(urls.begin(), urls.end());
-    auto remainder = finishFusionResults(std::move(batch.candidates), query,
-                                         fusion_max_site_results_per_page);
-    results.reserve(results.size() + remainder.size());
-    for (auto &result : remainder)
-        if (!reranked.contains(result.url))
+    else
+        feature_values = tlgs::ranking::features(query, pages, pool_signals);
+
+    std::vector<float> model_scores(pages.size());
+    const auto scoring_started = Clock::now();
+    tlgs::ranking::score_batch(feature_values, feature_count, model_scores);
+    const auto scoring_finished = Clock::now();
+    LOG_INFO << "Learned search: " << pages.size() << " candidates; retrieval " << batch.total_ms
+             << "ms, pages " << elapsed_ms(pages_started, pages_finished) << "ms, context "
+             << elapsed_ms(pages_finished, context_finished) << "ms, features "
+             << elapsed_ms(context_finished, scoring_started) << "ms, model "
+             << elapsed_ms(scoring_started, scoring_finished) << "ms, total "
+             << elapsed_ms(started, scoring_finished) << "ms";
+
+    auto results = orderLTRResults(std::move(shortlist), model_scores);
+    // Only feature extraction is bounded. Keep the remaining fusion results for pagination.
+    const std::unordered_set<std::string> reranked_urls(urls.begin(), urls.end());
+    auto remaining_results =
+        finishFusionResults(std::move(batch.candidates), query, fusion_max_site_results_per_page);
+    results.reserve(results.size() + remaining_results.size());
+    for (auto &result : remaining_results)
+        if (!reranked_urls.contains(result.url))
             results.push_back(std::move(result));
     co_return results;
 #endif
@@ -1914,10 +1956,10 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
         const auto metadata_started = Clock::now();
         if(!urls.empty()) {
             const auto rows = co_await fetchSearchPageData(
-                query, urls, raw ? PageDataMode::Raw : PageDataMode::Rendered);
+                query, urls, raw ? PageDataMode::RawDocuments : PageDataMode::Results);
             std::unordered_map<std::string, SearchPageItem> metadata;
             for(const auto& row : rows) {
-                auto item = readSearchPage(row, raw ? PageDataMode::Raw : PageDataMode::Rendered);
+                auto item = readSearchPage(row, raw ? PageDataMode::RawDocuments : PageDataMode::Results);
                 metadata.emplace(item.url, std::move(item));
             }
             for(size_t i = 0; i < selected_count; ++i) {
