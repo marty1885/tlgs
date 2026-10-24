@@ -160,6 +160,8 @@ Task<> createDb()
 		);
 	)");
 	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS url_site_map_site_idx ON url_site_map(ruleset_id, site_key);");
+	// Retrieval maps thousands of URLs; hash lookups avoid traversing the wider composite primary key.
+	co_await db->execSqlCoro("CREATE INDEX IF NOT EXISTS url_site_map_url_hash_idx ON public.url_site_map USING hash(url);");
 
 	co_await db->execSqlCoro(R"(
 		CREATE TABLE IF NOT EXISTS public.hilltop_edges (

@@ -853,6 +853,21 @@ SearchController::SearchController()
     }
 }
 
+// PostgreSQL text-array values are quoted; quotes and backslashes need escaping.
+static void appendPgArrayValue(std::string &array, std::string_view value)
+{
+    if (array.size() > 1)
+        array.push_back(',');
+    array.push_back('"');
+    for (const auto c : value)
+    {
+        if (c == '"' || c == '\\')
+            array.push_back('\\');
+        array.push_back(c);
+    }
+    array.push_back('"');
+}
+
 Task<RetrievalBatch> SearchController::retrieveCandidates(
     const std::string& query_str, const SearchFilter& filter)
 {
@@ -901,19 +916,28 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
                          bm25_finished - bm25_started).count()
                   << "ms (" << bm25_rows.size() << " candidates, filters "
                   << (filter_empty ? "empty" : "active") << ')';
-        nlohmann::json bm25_candidates = nlohmann::json::array();
-        for(const auto& row : bm25_rows)
-            bm25_candidates.push_back({
-                {"url", row["url"].as<std::string>()},
-                {"bm25_distance", row["bm25_distance"].as<double>()},
-                {"physical_site", row["physical_site"].as<std::string>()}
-            });
+        std::string candidate_urls = "{", candidate_distances = "{", candidate_sites = "{";
+        candidate_urls.reserve(bm25_rows.size() * 96 + 2);
+        candidate_distances.reserve(bm25_rows.size() * 24 + 2);
+        candidate_sites.reserve(bm25_rows.size() * 48 + 2);
+        for (const auto &row : bm25_rows)
+        {
+            appendPgArrayValue(candidate_urls, row["url"].as<std::string>());
+            appendPgArrayValue(candidate_sites, row["physical_site"].as<std::string>());
+            if (candidate_distances.size() > 1)
+                candidate_distances.push_back(',');
+            fmt::format_to(std::back_inserter(candidate_distances), "{}", row["bm25_distance"].as<double>());
+        }
+        candidate_urls.push_back('}');
+        candidate_distances.push_back('}');
+        candidate_sites.push_back('}');
+        const auto encoded_at = Clock::now();
         auto ranked_rows = co_await db->execSqlCoro(R"sql(
         WITH mapped AS (
             SELECT bm25.url, -bm25.bm25_distance AS fts_score,
                    coalesce(target_map.site_key, bm25.physical_site) AS target_site
-            FROM jsonb_to_recordset($1::jsonb)
-                 AS bm25(url text, bm25_distance double precision, physical_site text)
+            FROM unnest($1::text[], $2::double precision[], $3::text[])
+                 AS bm25(url, bm25_distance, physical_site)
             LEFT JOIN url_site_map target_map
               ON target_map.ruleset_id=(
                   SELECT active_ruleset_id FROM site_identity_state WHERE singleton=TRUE
@@ -929,9 +953,9 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
             -- Explicit domain searches retain their full candidate depth.
             SELECT url, fts_score, target_site
             FROM site_ranked
-            WHERE site_rank <= $3::bigint
+            WHERE site_rank <= $5::bigint
             ORDER BY fts_score DESC, url
-            LIMIT $2
+            LIMIT $4
         ), candidates AS (
             SELECT limited.*, row_number() OVER (ORDER BY fts_score DESC, url) AS fts_rank
             FROM limited
@@ -943,14 +967,18 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         FROM candidates
         JOIN pages ON pages.url=candidates.url
         ORDER BY candidates.fts_rank
-    )sql", bm25_candidates.dump(), fusion_candidate_limit, site_candidate_limit);
+    )sql", candidate_urls, candidate_distances, candidate_sites,
+        fusion_candidate_limit, site_candidate_limit);
         const auto ranked_finished = Clock::now();
         LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
                          bm25_finished - bm25_started).count()
                   << "ms (" << bm25_rows.size() << " candidates), rerank "
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         ranked_finished - bm25_finished).count() << "ms";
+                         ranked_finished - bm25_finished).count() << "ms (encode "
+                  << std::chrono::duration<double, std::milli>(encoded_at - bm25_finished).count()
+                  << "ms, SQL round trip "
+                  << std::chrono::duration<double, std::milli>(ranked_finished - encoded_at).count() << "ms)";
         co_return ranked_rows;
     });
 
@@ -1704,6 +1732,7 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     { return std::chrono::duration<double, std::milli>(end - start).count(); };
     const auto started = Clock::now();
     auto batch = co_await retrieveCandidates(query, filter);
+    const auto retrieval_finished = Clock::now();
     if (batch.candidates.empty())
         co_return std::vector<RankedResult>{};
 
@@ -1755,13 +1784,6 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     const auto scoring_started = Clock::now();
     tlgs::ranking::score_batch(feature_values, feature_count, model_scores);
     const auto scoring_finished = Clock::now();
-    LOG_INFO << "Learned search: " << pages.size() << " candidates; retrieval " << batch.total_ms
-             << "ms, pages " << elapsed_ms(pages_started, pages_finished) << "ms, context "
-             << elapsed_ms(pages_finished, context_finished) << "ms, features "
-             << elapsed_ms(context_finished, scoring_started) << "ms, model "
-             << elapsed_ms(scoring_started, scoring_finished) << "ms, total "
-             << elapsed_ms(started, scoring_finished) << "ms";
-
     auto results = orderLTRResults(std::move(shortlist), model_scores);
     // Only feature extraction is bounded. Keep the remaining fusion results for pagination.
     const std::unordered_set<std::string> reranked_urls(urls.begin(), urls.end());
@@ -1771,6 +1793,16 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
     for (auto &result : remaining_results)
         if (!reranked_urls.contains(result.url))
             results.push_back(std::move(result));
+    const auto ordering_finished = Clock::now();
+    LOG_INFO << "Learned search: " << pages.size() << " candidates; retrieval "
+             << elapsed_ms(started, retrieval_finished) << "ms, shortlist "
+             << elapsed_ms(retrieval_finished, pages_started) << "ms, pages "
+             << elapsed_ms(pages_started, pages_finished) << "ms, context "
+             << elapsed_ms(pages_finished, context_finished) << "ms, features "
+             << elapsed_ms(context_finished, scoring_started) << "ms, model "
+             << elapsed_ms(scoring_started, scoring_finished) << "ms, ordering "
+             << elapsed_ms(scoring_finished, ordering_finished) << "ms, total "
+             << elapsed_ms(started, ordering_finished) << "ms";
     co_return results;
 #endif
 }
