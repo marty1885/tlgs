@@ -145,6 +145,8 @@ protected:
     std::mutex tardis_captures_mutex_;
     std::unordered_map<std::string, TardisCapture> tardis_captures_;
     std::atomic<bool> tardis_active_ = false;
+    // A feed page may be checkpointed only after all of its captures were imported.
+    std::atomic<size_t> tardis_import_failures_ = 0;
     // A TARDIS window uses one immutable ruleset, even if an administrator
     // activates a replacement while the window is being processed.
     std::optional<int64_t> tardis_ruleset_id_;

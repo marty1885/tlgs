@@ -184,6 +184,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
     size_t pages = 0;
     while(true) {
         auto page = co_await client.updates(since, till, token);
+        tardis_import_failures_ = 0;
         tardis_active_ = true;
         ended_ = false;
         std::vector<std::string> captured_urls;
@@ -192,8 +193,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
             const auto url = capture.url;
             const tlgs::Url parsed_url(url);
             if(!parsed_url.good() || parsed_url.str() != url) {
-                LOG_WARN << "Ignoring invalid TARDIS URL " << url;
-                continue;
+                throw std::runtime_error("invalid TARDIS URL: " + tlgs::logText(url));
             }
             captured_urls.push_back(parsed_url.str());
             if(capture.hasBody) {
@@ -259,6 +259,10 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         // crawlPage() immediately after their links are parsed.
         co_await syncTardisSiteIdentity(captured_urls);
         co_await crawlAll();
+        const auto failures = tardis_import_failures_.load();
+        if(failures != 0)
+            throw std::runtime_error("TARDIS page import failed for " + std::to_string(failures)
+                + " capture(s); cursor was not advanced");
         if(page.hasMore) {
             token = page.resumeToken;
             co_await db->execSqlCoro("UPDATE crawler_sync_state SET window_since = $1, window_till = $2, resume_token = $3 WHERE source = 'tardis';", since, till, token);
@@ -564,6 +568,8 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
         auto it = std::find_if(url_str.begin(), url_str.end(), [](char c) { return c < 0x20; });
         auto can_crawl = it == url_str.end() && co_await shouldCrawl(url_str);
         if(can_crawl == false) {
+            if(tardis_active_)
+                ++tardis_import_failures_;
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url_str, 0, std::string("blocked"));
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
@@ -624,6 +630,10 @@ void GeminiCrawler::dispatchCrawl()
                 bool success = co_await self->crawlPage(url_str.value(), retry_count != 0);
                 if(success)
                     LOG_INFO << "Processed " << url_str.value();
+                else if(self->tardis_active_) {
+                    LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str.value());
+                    ++self->tardis_import_failures_;
+                }
                 if(self->tardis_active_) {
                     std::lock_guard lock(self->tardis_captures_mutex_);
                     self->tardis_captures_.erase(url_str.value());
@@ -641,6 +651,7 @@ void GeminiCrawler::dispatchCrawl()
                 else {
                     LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
                     if(self->tardis_active_) {
+                        ++self->tardis_import_failures_;
                         std::lock_guard lock(self->tardis_captures_mutex_);
                         self->tardis_captures_.erase(url_str.value());
                         break;
@@ -656,6 +667,8 @@ void GeminiCrawler::dispatchCrawl()
     }
     catch(std::exception& e) {
         LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
+        if(self->tardis_active_)
+            ++self->tardis_import_failures_;
         counter->release();
         const auto weak = std::weak_ptr<GeminiCrawler>(self);
         self->loop_->queueInLoop([weak] {
@@ -791,8 +804,10 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
             charset = mime_param.count("charset") ? mime_param["charset"] : std::optional<std::string>{};
             lang = mime_param.count("lang") ? mime_param["lang"] : std::optional<std::string>{};
 
-            // No reason to reindex if the content hasn't changed. `force_reindex_` is used to force reindexing of files
-            if(!force_reindex_ && !retry_after_timeout && search_schema_version >= 3
+            // Replaying a TARDIS page must repair a prior partial import (for
+            // example, a page update that committed before its links failed).
+            // Other crawl modes can skip an unchanged, already indexed body.
+            if(!tardis_active_ && !force_reindex_ && !retry_after_timeout && search_schema_version >= 3
                 && raw_content_hash == new_raw_content_hash) {
                 co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_crawl_success_at = CURRENT_TIMESTAMP, "
                     "last_status = $2, last_meta = $3, content_type = $4 WHERE url = $1;",
@@ -856,7 +871,9 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
                 , url.str(), status, meta);
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
                 , url.str());
-            co_return false;
+            // TARDIS reported this upstream failure and we stored its status.
+            // The feed capture itself was imported successfully.
+            co_return tardis_active_;
         }
         // safeguard in case title is too long for Postgres
         if(title.size() > 1000) {
@@ -876,7 +893,7 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
         indexed_content.append(body);
         auto new_indexed_content_hash = tlgs::xxHash64(indexed_content);
         // Absolutelly no reason to reindex if the content hasn't changed even after post processing.
-        if(!force_reindex_ && !retry_after_timeout && search_schema_version >= 3
+        if(!tardis_active_ && !force_reindex_ && !retry_after_timeout && search_schema_version >= 3
             && new_indexed_content_hash == indexed_content_hash
             && new_raw_content_hash == raw_content_hash) {
             // Maybe this is too strict? The conent doesn't change means the content_type doesn't change, right...?
@@ -983,8 +1000,10 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
             url.str(), body, body_size, charset, lang, status, meta, mime, title, nlohmann::json(cross_site_links).dump()
             , nlohmann::json(internal_links).dump(), new_indexed_content_hash, new_raw_content_hash, feed_type,
             has_explicit_title, headings, link_text, indexed_title);
-        if(internal_links.size() == 0 && cross_site_links.size() == 0)
+        if(internal_links.size() == 0 && cross_site_links.size() == 0) {
+            co_await db->execSqlCoro("DELETE FROM links WHERE url = $1", url.str());
             co_return true;
+        }
 
         // Update link formation. JSON recordsets keep the bulk insert parameterized.
         nlohmann::json link_rows = nlohmann::json::array();
