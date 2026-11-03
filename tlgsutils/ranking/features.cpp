@@ -58,6 +58,24 @@ static const Terms german_stop = {"aber", "als", "auch", "auf", "aus", "bei", "d
 static const Terms russian_stop = {"без", "был", "была", "были", "быть", "для", "его",
     "есть", "или", "как", "мне", "она", "они", "оно", "при", "так", "это",
     "что", "чтобы", "этот", "эта", "эти"};
+// Added in base version 3 (incoming164 context version 2).
+static const Terms spanish_stop = {"al", "como", "con", "cuando", "de", "del", "desde", "donde",
+    "el", "ella", "ellos", "en", "entre", "es", "esta", "este", "esto", "estos", "hasta", "la",
+    "las", "los", "más", "muy", "para", "pero", "por", "que", "qué", "sobre", "su", "sus",
+    "también", "una", "uno", "unos", "y"};
+// Query-side list for the version-2 label features. A query has no declared language,
+// so this is the union of the lists above, minus entries that are also ordinary English
+// words (for example "die", "war", "con"), which must stay searchable.
+static const Terms label_query_stop = []
+{
+    Terms out = {"a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in", "is",
+                 "it", "my", "of", "on", "or", "that", "the", "this", "to", "what", "with", "your"};
+    for (const auto *list : {&german_stop, &spanish_stop, &russian_stop})
+        out.insert(list->begin(), list->end());
+    for (const auto *ambiguous : {"die", "war", "den", "dem", "des", "hat", "sich", "con", "al", "su"})
+        out.erase(ambiguous);
+    return out;
+}();
 
 static bool stopWord(const std::string& term, const std::string& language, unsigned version)
 {
@@ -69,7 +87,8 @@ static bool stopWord(const std::string& term, const std::string& language, unsig
         return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
     });
     return (primary == "de" && german_stop.count(term)) ||
-           (primary == "ru" && russian_stop.count(term));
+           (primary == "ru" && russian_stop.count(term)) ||
+           (version >= 3 && primary == "es" && spanish_stop.count(term));
 }
 static icu::UnicodeString unicode(const std::string &s) { return icu::UnicodeString::fromUTF8(s); }
 static std::string utf8(const icu::UnicodeString &s)
@@ -436,7 +455,7 @@ static Values extractPageFeatures(const std::string &query, const Words &query_w
 std::vector<float> features(const std::string &query, const std::vector<Page> &items,
                             const std::vector<RetrievalSignals> &retrieval_context, unsigned version)
 {
-    if (version != 1 && version != 2)
+    if (version < 1 || version > 3)
         throw std::invalid_argument("Unsupported feature version");
     const auto query_words = tokens(query);
     const auto query_terms = unique(query_words);
@@ -577,6 +596,8 @@ struct ContextQuery
     Terms content_terms;
     Words anchor_words;
     Terms anchor_unique_terms;
+    // Version-2 label/listing features: multilingual stopwords removed (all words if none remain).
+    Terms label_terms;
 
     // Context scores use lowercase words; link-overlap features use case folding.
     explicit ContextQuery(const std::string &query)
@@ -585,6 +606,11 @@ struct ContextQuery
     {
         const auto content = contentQueryTerms(phrase_words);
         content_terms.insert(content.begin(), content.end());
+        for (const auto &word : phrase_words)
+            if (!label_query_stop.count(word))
+                label_terms.insert(word);
+        if (label_terms.empty())
+            label_terms.insert(phrase_words.begin(), phrase_words.end());
     }
 };
 
@@ -894,7 +920,7 @@ static consteval size_t contextFeatureIndex(std::string_view name)
     for (size_t i = 0; i < context_feature_names.size(); ++i)
         if (context_feature_names[i] == name)
             return i;
-    throw "Unknown incoming150 feature";
+    throw "Unknown incoming164 feature";
 }
 
 static consteval size_t contextFeatureIndex(std::string_view prefix, std::string_view suffix)
@@ -906,7 +932,7 @@ static consteval size_t contextFeatureIndex(std::string_view prefix, std::string
             name.substr(prefix.size() + 1) == suffix)
             return i;
     }
-    throw "Unknown incoming150 feature";
+    throw "Unknown incoming164 feature";
 }
 
 static constexpr auto base_feature_columns = []() consteval
@@ -954,6 +980,169 @@ static void storeIncomingLinkFeatures(ContextFeatureValues &values, const Contex
     values[contextFeatureIndex("m_anchor_max_support_log")] = std::log1p(incoming_text.max_independent_sites);
 }
 
+static bool containsPhrase(const Words &haystack, const Words &needle)
+{
+    if (needle.empty() || needle.size() > haystack.size())
+        return false;
+    return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end()) != haystack.end();
+}
+
+static size_t countQueryTerms(const Words &words, const Terms &terms, Terms *seen = nullptr)
+{
+    size_t hits = 0;
+    for (const auto &word : words)
+        if (terms.contains(word))
+        {
+            ++hits;
+            if (seen)
+                seen->insert(word);
+        }
+    return hits;
+}
+
+// Anchor label (last line of a context) versus surrounding source title/headings, and the
+// quality of the sites whose labels match: selectivity = 1/log2(2 + hosts the linking page
+// points to), credible = linked from at least two other hosts. Each site counts once, with
+// its most selective matching context. Contexts without linker data count their support
+// as anonymous sites with no selectivity or standing.
+static void storeLabelLinkerFeatures(ContextFeatureValues &values, const ContextQuery &query,
+                                     const std::vector<IncomingContext> &incoming)
+{
+    struct Site
+    {
+        double selectivity = 0;
+        uint32_t standing = 0, out_hosts = 0;
+    };
+    std::unordered_map<uint64_t, Site> label_sites;
+    std::set<uint64_t> phrase_sites, context_sites;
+    size_t anonymous_label = 0, anonymous_phrase = 0, anonymous_context = 0;
+    double coverage = 0, share = 0;
+    const auto &terms = query.label_terms;
+    for (const auto &context : incoming)
+    {
+        const auto newline = context.text.rfind('\n');
+        const auto label = context_terms(newline == std::string::npos ? context.text : context.text.substr(newline + 1));
+        Terms seen;
+        countQueryTerms(label, terms, &seen);
+        if (!terms.empty())
+            coverage = std::max(coverage, double(seen.size()) / terms.size());
+        if (!terms.empty() && seen.size() == terms.size())
+        {
+            share = std::max(share, double(terms.size()) / std::max<size_t>(label.size(), 1));
+            const bool phrase = containsPhrase(label, query.phrase_words);
+            if (context.linkers.empty())
+            {
+                anonymous_label += context.independent_sites;
+                anonymous_phrase += phrase ? context.independent_sites : 0;
+            }
+            for (const auto &linker : context.linkers)
+            {
+                const double selectivity = 1. / std::log2(2. + std::max<uint32_t>(linker.out_hosts, 1));
+                auto [entry, inserted] = label_sites.try_emplace(linker.site);
+                if (inserted || selectivity > entry->second.selectivity)
+                    entry->second = {selectivity, linker.standing, std::max<uint32_t>(linker.out_hosts, 1)};
+                if (phrase)
+                    phrase_sites.insert(linker.site);
+            }
+        }
+        else if (!terms.empty())
+        {
+            Terms anywhere;
+            countQueryTerms(context_terms(context.text), terms, &anywhere);
+            if (anywhere.size() != terms.size())
+                continue;
+            if (context.linkers.empty())
+                anonymous_context += context.independent_sites;
+            for (const auto &linker : context.linkers)
+                context_sites.insert(linker.site);
+        }
+    }
+    size_t context_only = anonymous_context;
+    for (const auto site : context_sites)
+        context_only += !label_sites.contains(site);
+    double selective = 0, credible_selective = 0;
+    size_t credible = 0;
+    uint32_t max_standing = 0, min_out_hosts = std::numeric_limits<uint32_t>::max();
+    for (const auto &[site, value] : label_sites)
+    {
+        selective += value.selectivity;
+        if (value.standing >= 2)
+        {
+            ++credible;
+            credible_selective += value.selectivity;
+        }
+        max_standing = std::max(max_standing, value.standing);
+        min_out_hosts = std::min(min_out_hosts, value.out_hosts);
+    }
+    values[contextFeatureIndex("lc_label_cov_max")] = coverage;
+    values[contextFeatureIndex("lc_label_all_sites")] = std::log1p(label_sites.size() + anonymous_label);
+    values[contextFeatureIndex("lc_label_phrase_sites")] = std::log1p(phrase_sites.size() + anonymous_phrase);
+    values[contextFeatureIndex("lc_context_only_sites")] = std::log1p(context_only);
+    values[contextFeatureIndex("lc_label_query_share")] = share;
+    values[contextFeatureIndex("lq_selective_sum")] = selective;
+    values[contextFeatureIndex("lq_credible_sites")] = std::log1p(credible);
+    values[contextFeatureIndex("lq_credible_selective")] = credible_selective;
+    values[contextFeatureIndex("lq_max_source_standing")] = std::log1p(max_standing);
+    values[contextFeatureIndex("lq_min_source_outdeg")] =
+        label_sites.empty() ? NAN : std::log1p(static_cast<double>(min_out_hosts));
+}
+
+static bool datedPath(const std::string &path)
+{
+    const auto digit = [&](size_t i) { return i < path.size() && path[i] >= '0' && path[i] <= '9'; };
+    for (size_t i = 0; i + 7 < path.size(); ++i)
+    {
+        if (path[i] != '/' || !digit(i + 1) || !digit(i + 2) || !digit(i + 3) || !digit(i + 4))
+            continue;
+        const auto century = (path[i + 1] - '0') * 10 + (path[i + 2] - '0');
+        const auto separator = path[i + 5];
+        if ((century != 19 && century != 20) || (separator != '/' && separator != '-' && separator != '_'))
+            continue;
+        const auto month = (path[i + 6] - '0') * 10 + (path[i + 7] - '0');
+        if (digit(i + 6) && digit(i + 7) && month >= 1 && month <= 12 && !digit(i + 8))
+            return true;
+    }
+    return false;
+}
+
+// Listing shape from the page's own already-tokenized lines (no second tokenization pass).
+static void storeListingFeatures(ContextFeatureValues &values, const ContextQuery &query, const Page &page,
+                                 std::span<const TokenizedLine> page_lines)
+{
+    const auto &terms = query.label_terms;
+    size_t link_lines = 0, body_lines = 0, matching_labels = 0, in_labels = 0, total = 0;
+    for (const auto &line : page_lines)
+    {
+        switch (line.field)
+        {
+        case OutgoingLinkField:
+        {
+            ++link_lines;
+            Terms seen;
+            in_labels += countQueryTerms(line.words, terms, &seen);
+            matching_labels += !terms.empty() && seen.size() == terms.size();
+            break;
+        }
+        case BodyField:
+            ++body_lines;
+            [[fallthrough]];
+        case TitleField:
+        case HeadingField:
+            total += countQueryTerms(line.words, terms);
+            break;
+        default:
+            break;
+        }
+    }
+    total += in_labels;
+    values[contextFeatureIndex("ls_link_line_fraction")] =
+        double(link_lines) / std::max<size_t>(link_lines + body_lines, 1);
+    values[contextFeatureIndex("ls_query_label_count")] = std::log1p(matching_labels);
+    values[contextFeatureIndex("ls_query_label_share")] = total ? double(in_labels) / total : 0.;
+    const Url url(page.url, false);
+    values[contextFeatureIndex("ls_dated_url")] = datedPath(url.path()) ? 1.f : 0.f;
+}
+
 static ContextFeatureValues extractContextFeatures(const ContextQuery &query, const Page &page,
                                                    const std::vector<IncomingContext> &incoming,
                                                    const CorpusStatistics &stats, std::span<const float> base)
@@ -964,6 +1153,7 @@ static ContextFeatureValues extractContextFeatures(const ContextQuery &query, co
     auto text_lines = tokenizePageText(page);
     const auto page_scores = scoreContextText(query, text_lines, page, stats);
     const auto page_line_count = text_lines.size();
+    storeListingFeatures(values, query, page, text_lines);
     const auto incoming_text = appendIncomingLinks(text_lines, incoming);
     const auto combined_scores =
         text_lines.size() == page_line_count ? page_scores : scoreContextText(query, text_lines, page, stats);
@@ -975,6 +1165,7 @@ static ContextFeatureValues extractContextFeatures(const ContextQuery &query, co
     // The feature contract includes deltas for every component except total.
     storeContextScores<"m_delta", context_score_fields.size() - 1>(values, score_delta);
     storeIncomingLinkFeatures(values, query, incoming_text, incoming.size());
+    storeLabelLinkerFeatures(values, query, incoming);
     return values;
 }
 
@@ -984,8 +1175,9 @@ std::vector<float> context_features(const std::string &query, const std::vector<
                                     const std::vector<RetrievalSignals> &retrieval_context)
 {
     if (incoming.size() != items.size() || !stats.documents)
-        throw std::invalid_argument("Missing incoming150 context/statistics");
-    const auto base = features(query, items, retrieval_context, 1);
+        throw std::invalid_argument("Missing incoming164 context/statistics");
+    // Base columns use language-gated English/German/Spanish/Russian stopwords.
+    const auto base = features(query, items, retrieval_context, 3);
     const ContextQuery context_query(query);
     std::vector<float> result;
     result.reserve(items.size() * context_feature_names.size());

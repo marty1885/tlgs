@@ -3,7 +3,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Row-major float32, 150 columns; missing=NaN, no alignment required.
+/* Row-major float32, 164 columns; missing=NaN, no alignment required.
  * Returns 0 on success, 1 for wrong shape, 2 for invalid buffers, 3 for overlap.
  * Lengths count float elements, not bytes. No reads/writes on rejection.
  * Empty input/output supported; checked shape must still match this model. */
@@ -19,10 +19,10 @@ const char *ranker_target(void);
 #include <string_view>
 namespace ranker_api {
 inline constexpr unsigned abi_version = 2;
-inline constexpr size_t feature_count = 150;
-inline constexpr unsigned feature_version = 1;
-inline constexpr std::string_view feature_set = "incoming150";
-inline constexpr std::array<std::string_view, 150> feature_names = {{
+inline constexpr size_t feature_count = 164;
+inline constexpr unsigned feature_version = 2;
+inline constexpr std::string_view feature_set = "incoming164";
+inline constexpr std::array<std::string_view, 164> feature_names = {{
     "bm25_log_score",
     "bm25_present",
     "bm25_relative",
@@ -172,7 +172,21 @@ inline constexpr std::array<std::string_view, 150> feature_names = {{
     "url_tf_max",
     "url_tf_mean",
     "url_tf_min",
-    "url_unique_fraction"
+    "url_unique_fraction",
+    "lc_label_cov_max",
+    "lc_label_all_sites",
+    "lc_label_phrase_sites",
+    "lc_context_only_sites",
+    "lc_label_query_share",
+    "lq_selective_sum",
+    "lq_credible_sites",
+    "lq_credible_selective",
+    "lq_max_source_standing",
+    "lq_min_source_outdeg",
+    "ls_link_line_fraction",
+    "ls_query_label_count",
+    "ls_query_label_share",
+    "ls_dated_url"
 }};
 [[nodiscard]] inline int score_batch(std::span<const float> features, size_t columns,
                        std::span<float> scores) {

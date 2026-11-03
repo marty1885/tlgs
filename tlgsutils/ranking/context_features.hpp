@@ -5,9 +5,11 @@
 
 namespace tlgs::ranking
 {
-inline constexpr std::string_view context_feature_set = "incoming150";
-inline constexpr unsigned context_feature_version = 1;
-inline constexpr std::array<std::string_view, 150> context_feature_names = {
+inline constexpr std::string_view context_feature_set = "incoming164";
+// Version 2: linker-aware incoming contexts, label/listing features and
+// language-gated English/German/Spanish/Russian stopwords (base version 3).
+inline constexpr unsigned context_feature_version = 2;
+inline constexpr std::array<std::string_view, 164> context_feature_names = {
     "bm25_log_score",
     "bm25_present",
     "bm25_relative",
@@ -158,11 +160,38 @@ inline constexpr std::array<std::string_view, 150> context_feature_names = {
     "url_tf_mean",
     "url_tf_min",
     "url_unique_fraction",
+    // Appended in version 2; earlier columns keep their positions.
+    "lc_label_cov_max",
+    "lc_label_all_sites",
+    "lc_label_phrase_sites",
+    "lc_context_only_sites",
+    "lc_label_query_share",
+    "lq_selective_sum",
+    "lq_credible_sites",
+    "lq_credible_selective",
+    "lq_max_source_standing",
+    "lq_min_source_outdeg",
+    "ls_link_line_fraction",
+    "ls_query_label_count",
+    "ls_query_label_share",
+    "ls_dated_url",
 };
+// One linking site behind an incoming context. `site` is an opaque identity used only
+// to deduplicate sites across contexts; `out_hosts` is the smallest number of distinct
+// hosts any of its linking pages points to; `standing` is the number of distinct other
+// hosts linking to the site.
+struct IncomingLinker
+{
+    uint64_t site = 0;
+    uint32_t out_hosts = 0;
+    uint32_t standing = 0;
+};
+
 struct IncomingContext
 {
     std::string text;
     size_t independent_sites = 0;
+    std::vector<IncomingLinker> linkers = {};
 };
 
 struct CorpusStatistics
@@ -176,7 +205,7 @@ std::vector<std::string> context_terms(const std::string &text);
 // Views are valid only during the callback.
 void visit_context_terms(std::string text, const std::function<void(std::string_view)> &visitor);
 std::vector<std::string> context_url_terms(const std::string &url);
-// Contexts correspond to items, capped at64 distinct texts by the refresh tool.
+// Contexts correspond to items, capped at 64 distinct texts by the refresh tool.
 std::vector<float> context_features(const std::string &query, const std::vector<Page> &items,
                                     const std::vector<std::vector<IncomingContext>> &incoming,
                                     const CorpusStatistics &stats,

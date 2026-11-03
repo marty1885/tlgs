@@ -1584,6 +1584,7 @@ struct SearchPageItem
     size_t rank = 0;
     tlgs::ranking::RetrievalSignals retrieval;
     std::optional<RawSearchDocument> document;
+    std::optional<nlohmann::json> incoming;
 };
 
 // JSON belongs to the response boundary, after page loading and ranking.
@@ -1610,6 +1611,8 @@ static void to_json(nlohmann::json& json, const SearchPageItem& item)
         json["site"] = item.site;
         json["retrieval"] = item.retrieval;
         json["retrieval"]["indexed_content_hash"] = item.indexed_content_hash;
+        if (item.incoming)
+            json["incoming"] = *item.incoming;
     }
     else {
         json["snippet"] = item.snippet;
@@ -1695,9 +1698,10 @@ static Task<RankingContext> loadRankingContext(const std::string &query, const s
                 ) incoming),'{}'::jsonb)::text AS incoming_links
         FROM ranking_context_state state JOIN site_identity_state identity
           ON identity.singleton AND identity.active_ruleset_id=state.ruleset_id
-        WHERE state.singleton AND state.feature_version=1
+        WHERE state.singleton AND state.feature_version=$3
     )sql",
-        nlohmann::json(tlgs::ranking::context_terms(query)).dump(), nlohmann::json(urls).dump());
+        nlohmann::json(tlgs::ranking::context_terms(query)).dump(), nlohmann::json(urls).dump(),
+        static_cast<int64_t>(tlgs::ranking::context_feature_version));
     if (rows.empty())
         throw std::runtime_error("Ranking context is missing or uses an obsolete site ruleset");
 
@@ -1714,7 +1718,14 @@ static Task<RankingContext> loadRankingContext(const std::string &query, const s
         const auto found = incoming_by_url.find(url);
         if (found != incoming_by_url.end())
             for (const auto &link : *found)
-                links.push_back({link.at(0).get<std::string>(), link.at(1).get<size_t>()});
+            {
+                auto &context = links.emplace_back(tlgs::ranking::IncomingContext{
+                    link.at(0).get<std::string>(), link.at(1).get<size_t>()});
+                if (link.size() > 2 && link[2].is_array())
+                    for (const auto &linker : link[2])
+                        context.linkers.push_back({static_cast<uint64_t>(linker.at(0).get<int64_t>()),
+                                                   linker.at(1).get<uint32_t>(), linker.at(2).get<uint32_t>()});
+            }
     }
     co_return context;
 }
@@ -1894,6 +1905,14 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
         co_return error(k400BadRequest, "invalid_ranking", "raw mode returns retrieval data without final ranking");
     const auto ranking = rankingForSearch(requested_ranking == "traditional");
     const auto limit = req->getOptionalParameter<size_t>("limit").value_or(10);
+    // Raw mode can include the learned-ranking context for returned items, so offline
+    // training sees exactly what the server's feature extractor sees.
+    const auto requested_context = req->getParameter("context");
+    if(!requested_context.empty() && requested_context != "0" && requested_context != "1")
+        co_return error(k400BadRequest, "invalid_context", "context must be 0 or 1");
+    const bool include_context = requested_context == "1";
+    if(include_context && mode != "raw")
+        co_return error(k400BadRequest, "invalid_context", "context is only available in raw mode");
     if(limit == 0 || limit > fusion_candidate_limit+fusion_graph_candidate_limit)
         co_return error(k400BadRequest, "invalid_limit", "limit must be an integer from 1 to 1250");
     if(!tlgs::isValidUtf8(input))
@@ -1958,6 +1977,39 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
                 result.push_back(std::move(item));
             }
         }
+        nlohmann::json raw_context;
+        if(include_context) {
+#ifdef TLGS_ENABLE_LEARNED_RANKING
+            std::vector<std::string> returned;
+            returned.reserve(result.size());
+            for(const auto& item : result) returned.push_back(item.url);
+            RankingContext context;
+            try {
+                context = co_await loadRankingContext(query, returned);
+            }
+            catch(const std::exception& exception) {
+                LOG_WARN << "Search API request " << request_id << " has no ranking context: " << exception.what();
+                co_return error(k503ServiceUnavailable, "context_unavailable",
+                                "Ranking context is missing or was built for another feature version");
+            }
+            for(size_t i = 0; i < result.size(); ++i) {
+                auto contexts = nlohmann::json::array();
+                for(const auto& incoming : context.incoming_links[i]) {
+                    auto linkers = nlohmann::json::array();
+                    for(const auto& linker : incoming.linkers)
+                        linkers.push_back({static_cast<int64_t>(linker.site), linker.out_hosts, linker.standing});
+                    contexts.push_back({incoming.text, incoming.independent_sites, std::move(linkers)});
+                }
+                result[i].incoming = std::move(contexts);
+            }
+            raw_context = {{"feature_set", tlgs::ranking::context_feature_set},
+                           {"feature_version", tlgs::ranking::context_feature_version},
+                           {"documents", context.statistics.documents},
+                           {"document_frequency", context.statistics.document_frequency}};
+#else
+            co_return error(k400BadRequest, "invalid_context", "learned ranking context is not built into this server");
+#endif
+        }
         auto body = nlohmann::json{{"query",input},{"mode",mode},{"limit",limit},
             {"available",available},{"returned",result.size()},{"results",std::move(result)},
             {"took_ms",std::chrono::duration<double,std::milli>(Clock::now()-started).count()}};
@@ -1968,6 +2020,7 @@ Task<HttpResponsePtr> SearchController::search_api(HttpRequestPtr req)
             {"timings_ms",{{"bm25",batch.bm25_ms},{"hilltop",batch.hilltop_ms},
                            {"retrieval",batch.total_ms},
                            {"metadata",std::chrono::duration<double,std::milli>(Clock::now()-metadata_started).count()}}}};
+        if(include_context) body["raw"]["ranking_context"] = std::move(raw_context);
         co_return respond(k200OK, std::move(body));
     }
     catch(const std::exception& exception) {

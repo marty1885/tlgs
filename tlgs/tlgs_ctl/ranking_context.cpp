@@ -43,24 +43,60 @@ Task<> rebuildRankingContext(bool dry_run, int *exit_status)
         const auto snapshot = state[0]["snapshot_at"].as<std::string>();
         const auto context_started = std::chrono::steady_clock::now();
         // Keep incoming text in PostgreSQL and stream pages in bounded batches.
-        co_await transaction->execSqlCoro(R"sql(
+        // Each context is [qualifying_text, support, linkers]; linkers are up to 32
+        // [site_key, out_hosts, standing] triples for the distinct expert sites behind
+        // that text, most selective first:
+        //   out_hosts = fewest distinct hosts any of the site's linking pages points to,
+        //   standing  = distinct other hosts linking to the site's host.
+        // Offline training reads this statement verbatim (between the markers).
+        co_await transaction->execSqlCoro(
+            // BEGIN ranking_context_build
+            R"sql(
             CREATE TEMP TABLE ranking_context_build ON COMMIT DROP AS
-            WITH grouped AS (
-                SELECT target_url, qualifying_text, count(DISTINCT expert_site) AS support
+            WITH edges AS (
+                SELECT target_url, qualifying_text, expert_site, expert_url,
+                    lower(split_part(split_part(expert_site,'/',3),':',1)) AS expert_host
                 FROM hilltop_edges WHERE ruleset_id=$1 AND qualifying_text<>''
-                GROUP BY target_url,qualifying_text
+            ), out_hosts AS (
+                SELECT l.url, count(DISTINCT lower(l.to_host)) AS hosts
+                FROM links l WHERE l.is_cross_site
+                  AND l.url IN (SELECT DISTINCT expert_url FROM edges)
+                GROUP BY l.url
+            ), standing AS (
+                SELECT lower(l.to_host) AS host, count(DISTINCT lower(l.host)) AS sites
+                FROM links l WHERE l.is_cross_site
+                  AND lower(l.to_host) IN (SELECT DISTINCT expert_host FROM edges)
+                GROUP BY lower(l.to_host)
+            ), site_linkers AS (
+                SELECT e.target_url, e.qualifying_text, e.expert_site,
+                    min(coalesce(o.hosts,1)) AS out_hosts, max(coalesce(s.sites,0)) AS standing
+                FROM edges e
+                LEFT JOIN out_hosts o ON o.url=e.expert_url
+                LEFT JOIN standing s ON s.host=e.expert_host
+                GROUP BY e.target_url,e.qualifying_text,e.expert_site
+            ), ordered_linkers AS (
+                SELECT *, row_number() OVER (PARTITION BY target_url,qualifying_text
+                    ORDER BY out_hosts,standing DESC,expert_site) AS linker_rank
+                FROM site_linkers
+            ), grouped AS (
+                SELECT target_url, qualifying_text, count(*) AS support,
+                    jsonb_agg(jsonb_build_array(hashtextextended(expert_site,0),out_hosts,standing)
+                              ORDER BY linker_rank) FILTER (WHERE linker_rank<=32) AS linkers
+                FROM ordered_linkers GROUP BY target_url,qualifying_text
             ), ranked AS (
                 SELECT *, row_number() OVER (
                     PARTITION BY target_url ORDER BY support DESC,qualifying_text) AS rank
                 FROM grouped
             )
             SELECT target_url AS url,
-                jsonb_agg(jsonb_build_array(qualifying_text,support)
+                jsonb_agg(jsonb_build_array(qualifying_text,support,linkers)
                           ORDER BY support DESC,qualifying_text) AS contexts,
                 string_agg(qualifying_text,E'\n' ORDER BY support DESC,qualifying_text) AS search_text
             FROM ranked WHERE rank<=64 GROUP BY target_url
-        )sql",
-                                          ruleset);
+        )sql"
+            // END ranking_context_build
+            ,
+            ruleset);
         co_await transaction->execSqlCoro("CREATE UNIQUE INDEX ON ranking_context_build(url)");
         const auto context_count =
             co_await transaction->execSqlCoro("SELECT count(*) AS count FROM ranking_context_build");
