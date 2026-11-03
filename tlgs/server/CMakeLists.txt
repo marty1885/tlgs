@@ -37,8 +37,17 @@ if(TLGS_RANKER_MODEL_DIR)
   target_compile_definitions(tlgs_server PRIVATE TLGS_ENABLE_LEARNED_RANKING=1)
   set_source_files_properties(ranking/model.cpp PROPERTIES
     INCLUDE_DIRECTORIES "${TLGS_RANKER_DIRECTORY}")
+  # Compiling every Highway target multiplies the model's huge functions per target. The private
+  # bundle then needs ~6 GB of compiler memory. Default to one static target (~0.6 GB); set this
+  # empty for runtime dispatch across all targets. Scores are bit-exact on every target.
+  set(TLGS_RANKER_ARCH "znver2" CACHE STRING "-march for the ranker model only (empty: all Highway targets)")
+  set(TLGS_RANKER_OPTIONS "-fno-fast-math;-ffp-contract=off")
+  if(TLGS_RANKER_ARCH)
+    list(APPEND TLGS_RANKER_OPTIONS "-march=${TLGS_RANKER_ARCH}")
+    set_source_files_properties("${TLGS_RANKER_SOURCE}" PROPERTIES COMPILE_DEFINITIONS "HWY_COMPILE_ONLY_STATIC=1")
+  endif()
   set_source_files_properties("${TLGS_RANKER_SOURCE}" PROPERTIES
     INCLUDE_DIRECTORIES "${TLGS_RANKER_DIRECTORY}"
-    SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off")
-  message(STATUS "TLGS learned ranking model: ${TLGS_RANKER_DIRECTORY}")
+    SKIP_PRECOMPILE_HEADERS ON COMPILE_OPTIONS "${TLGS_RANKER_OPTIONS}")
+  message(STATUS "TLGS learned ranking model: ${TLGS_RANKER_DIRECTORY} (arch: ${TLGS_RANKER_ARCH})")
 endif()
