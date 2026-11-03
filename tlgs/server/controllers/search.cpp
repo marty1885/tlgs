@@ -911,11 +911,6 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         LIMIT $2
     )sql", query_str, fusion_bm25_candidate_limit, filter_json);
         const auto bm25_finished = Clock::now();
-        LOG_DEBUG << "BM25 retrieval for `" << tlgs::logText(query_str) << "`: "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         bm25_finished - bm25_started).count()
-                  << "ms (" << bm25_rows.size() << " candidates, filters "
-                  << (filter_empty ? "empty" : "active") << ')';
         std::string candidate_urls = "{", candidate_distances = "{", candidate_sites = "{";
         candidate_urls.reserve(bm25_rows.size() * 96 + 2);
         candidate_distances.reserve(bm25_rows.size() * 24 + 2);
@@ -970,15 +965,13 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
     )sql", candidate_urls, candidate_distances, candidate_sites,
         fusion_candidate_limit, site_candidate_limit);
         const auto ranked_finished = Clock::now();
-        LOG_DEBUG << "Lexical stages for `" << tlgs::logText(query_str) << "`: BM25 "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         bm25_finished - bm25_started).count()
-                  << "ms (" << bm25_rows.size() << " candidates), rerank "
-                  << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         ranked_finished - bm25_finished).count() << "ms (encode "
-                  << std::chrono::duration<double, std::milli>(encoded_at - bm25_finished).count()
-                  << "ms, SQL round trip "
-                  << std::chrono::duration<double, std::milli>(ranked_finished - encoded_at).count() << "ms)";
+        using Ms = std::chrono::duration<double, std::milli>;
+        LOG_DEBUG << fmt::format("Lexical retrieval for `{}`: BM25 {:.0f}ms ({} candidates{}), "
+                                 "rerank {:.0f}ms ({} kept; encode {:.0f}ms, SQL {:.0f}ms)",
+                                 tlgs::logText(query_str), Ms(bm25_finished - bm25_started).count(),
+                                 bm25_rows.size(), filter_empty ? "" : ", filtered",
+                                 Ms(ranked_finished - bm25_finished).count(), ranked_rows.size(),
+                                 Ms(encoded_at - bm25_finished).count(), Ms(ranked_finished - encoded_at).count());
         co_return ranked_rows;
     });
 
@@ -1073,7 +1066,6 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         candidates.emplace_back(std::move(candidate));
     }
 
-    size_t graph_only_candidates = 0;
     for(const auto& row : authority_rows) {
         const auto url = row["target_url"].as<std::string>();
         const auto graph_rank = row["graph_rank"].as<int64_t>();
@@ -1101,15 +1093,10 @@ Task<RetrievalBatch> SearchController::retrieveCandidates(
         candidate.indexed_content_hash = row["content_hash"].as<std::string>();
         candidate_indexes.emplace(candidate.result.url, candidates.size());
         candidates.emplace_back(std::move(candidate));
-        ++graph_only_candidates;
     }
 
     const auto total_ms =
         std::chrono::duration<double, std::milli>(Clock::now() - search_started).count();
-    LOG_DEBUG << "Search retrieval: " << rows.size() << " lexical candidates, "
-              << authority_rows.size() << " Hilltop targets, " << graph_only_candidates
-              << " graph-only candidates; lexical " << fts_query.duration.count()
-              << "ms, Hilltop " << hilltop_query.duration.count() << "ms, wall " << total_ms << "ms";
     co_return RetrievalBatch {
         .candidates = std::move(candidates),
         .bm25_ms = static_cast<double>(fts_query.duration.count()),
@@ -1806,7 +1793,7 @@ Task<std::vector<RankedResult>> SearchController::learnedSearch(const std::strin
         if (!reranked_urls.contains(result.url))
             results.push_back(std::move(result));
     const auto ordering_finished = Clock::now();
-    LOG_INFO << "Learned search: " << pages.size() << " candidates; retrieval "
+    LOG_DEBUG << "Learned search: " << pages.size() << " candidates; retrieval "
              << elapsed_ms(started, retrieval_finished) << "ms, shortlist "
              << elapsed_ms(retrieval_finished, pages_started) << "ms, pages "
              << elapsed_ms(pages_started, pages_finished) << "ms, context "
