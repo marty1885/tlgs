@@ -1701,7 +1701,8 @@ static Task<RankingContext> loadRankingContext(const std::string &query, const s
         WHERE state.singleton AND state.feature_version=$3
     )sql",
         nlohmann::json(tlgs::ranking::context_terms(query)).dump(), nlohmann::json(urls).dump(),
-        static_cast<int64_t>(tlgs::ranking::context_feature_version));
+        // ranking_context_state.feature_version is `integer`; binary binds must be 4 bytes.
+        static_cast<int32_t>(tlgs::ranking::context_feature_version));
     if (rows.empty())
         throw std::runtime_error("Ranking context is missing or uses an obsolete site ruleset");
 
