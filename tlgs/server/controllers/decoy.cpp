@@ -2,6 +2,8 @@
 
 #include <tlgsutils/tarpit.hpp>
 
+#include "decoy_world.hpp"
+
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 #include <fmt/format.h>
@@ -20,7 +22,7 @@
 namespace
 {
 using namespace drogon;
-using Days = std::chrono::sys_days;
+using namespace tlgs::decoy;
 
 constexpr std::string_view homePage = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>TLGS Index Console</title></head>
@@ -52,13 +54,6 @@ const recentJobs = `${indexApi}/jobs`;
 const leaseStatus = `${indexApi}/leases/current`;
 // Replay requires an exclusive writer lease and a maintenance principal.
 )JS";
-
-struct IndexJob
-{
-    std::string id;
-    std::string date;
-    bool current;
-};
 
 using Clock = std::chrono::steady_clock;
 
@@ -125,35 +120,6 @@ DiagnosticStore& diagnostics()
     return store;
 }
 
-Days currentDay()
-{
-    return std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-}
-
-IndexJob jobFor(Days day, bool current)
-{
-    const std::chrono::year_month_day calendarDay{day};
-    const auto date = fmt::format("{:04}-{:02}-{:02}",
-                                  int(calendarDay.year()),
-                                  unsigned(calendarDay.month()),
-                                  unsigned(calendarDay.day()));
-    const auto number = static_cast<uint64_t>(day.time_since_epoch().count());
-    const auto suffix = (number * 2654435761ULL + 1013904223ULL) % 1000000;
-    return {fmt::format("idx-{}-{:06}", date, suffix), date, current};
-}
-
-std::optional<IndexJob> findJob(std::string_view id, Days today)
-{
-    // Retain old links long enough for a returning scanner to find its history.
-    for(int age = 0; age < 60; ++age)
-    {
-        auto job = jobFor(today - std::chrono::days{age}, age == 0);
-        if(job.id == id)
-            return job;
-    }
-    return std::nullopt;
-}
-
 std::string jobPath(const IndexJob& job)
 {
     return "/api/v1/index/jobs/" + job.id;
@@ -208,6 +174,14 @@ HttpResponsePtr redirect(std::string_view target)
     return response;
 }
 
+std::string jobsPath(Days today, uint32_t page)
+{
+    if(page == 0)
+        return "/api/v1/index/jobs";
+    // Spartoi only hands the decoy a method and path, so the cursor lives in the path.
+    return "/api/v1/index/jobs/cursor/" + encodeCursor(today, page);
+}
+
 HttpResponsePtr statusResponse(Days today)
 {
     Json::Value body;
@@ -223,19 +197,32 @@ HttpResponsePtr statusResponse(Days today)
     return jsonReply(200, body);
 }
 
-HttpResponsePtr jobsResponse(Days today, int page)
+HttpResponsePtr jobsResponse(Days today, uint32_t page)
 {
     Json::Value body;
     Json::Value items(Json::arrayValue);
-    const int firstAge = page == 1 ? 0 : 3;
-    for(int age = firstAge; age < firstAge + 3; ++age)
-        items.append(jobEntry(jobFor(today - std::chrono::days{age}, age == 0)));
+    for(const auto& job : jobsPage(today, page))
+        items.append(jobEntry(job));
     body["items"] = std::move(items);
-    if(page == 1)
-        body["next"] = "/api/v1/index/jobs/page/2";
-    else
-        body["next"] = Json::nullValue;
+    // There is always another page; it just never contains anything new.
+    body["next"] = jobsPath(today, page + 1);
     return jsonReply(200, body);
+}
+
+// Writes against the lease always lose a race with the reconciler. Spartoi does
+// not pass request headers through, so the If-Match a client sends is never
+// seen; the conflict is reported against a revision just ahead of the live one.
+HttpResponsePtr leaseConflictResponse()
+{
+    const auto current = formatRevision(currentRevision() + 1);
+    auto body = errorBody("lease_revision_conflict",
+                          "The writer lease advanced before the request was applied. "
+                          "Retry with If-Match set to the current revision.");
+    body["current_revision"] = current;
+    body["lease"] = "/api/v1/index/leases/current";
+    auto response = jsonReply(412, body);
+    response->addHeader("etag", "\"" + current + "\"");
+    return response;
 }
 
 HttpResponsePtr jobDetailResponse(const IndexJob& job)
@@ -273,9 +260,9 @@ HttpResponsePtr jobLogResponse(const IndexJob& job)
     return reply(200, "text/plain; charset=utf-8", log);
 }
 
-HttpResponsePtr startDiagnosticResponse(const IndexJob& job, Days today)
+HttpResponsePtr startDiagnosticResponse(const IndexJob& job)
 {
-    const auto token = diagnostics().start(job, today.time_since_epoch().count());
+    const auto token = diagnostics().start(job, static_cast<int64_t>(currentRevision()));
     if(!token)
         return jsonReply(503, errorBody("diagnostic_capacity_reached", "Try again later."));
 
@@ -312,8 +299,8 @@ HttpResponsePtr diagnosticResponse(const IndexJob& job, std::string_view token)
     body["checks"]["manifest"] = "passed";
     body["checks"]["snapshot"] = "staged";
     body["checks"]["origin_lease_revision"] = "mismatch";
-    body["expected_revision"] = fmt::format("r{}", diagnostic->expectedRevision);
-    body["observed_revision"] = fmt::format("r{}", diagnostic->expectedRevision - 1);
+    body["expected_revision"] = formatRevision(diagnostic->expectedRevision);
+    body["observed_revision"] = formatRevision(diagnostic->expectedRevision - 1);
     body["origin_path"] = "/internal/index/leases/current";
     body["next_step"] = "Confirm the origin lease revision before replay.";
     return jsonReply(200, body);
@@ -342,23 +329,18 @@ HttpResponsePtr jobRoute(std::string_view path, HttpMethod method, Days today)
     if(reading && action == "/log")
         return jobLogResponse(*job);
     if(method == Post && action == "/diagnostics" && job->current)
-        return startDiagnosticResponse(*job, today);
+        return startDiagnosticResponse(*job);
     constexpr std::string_view diagnosticPrefix = "/diagnostics/";
     if(reading && action.starts_with(diagnosticPrefix))
         return diagnosticResponse(*job, action.substr(diagnosticPrefix.size()));
     if(method == Post && action == "/replay")
-    {
-        auto body = errorBody("maintenance_principal_required",
-                              "Only a maintenance principal may replay an index job.");
-        body["lease"] = "/api/v1/index/leases/current";
-        return jsonReply(403, body);
-    }
+        return leaseConflictResponse();
     return {};
 }
 
-HttpResponsePtr leaseResponse(Days today, const IndexJob& currentJob)
+HttpResponsePtr leaseResponse(const IndexJob& currentJob)
 {
-    const auto revision = fmt::format("r{}", today.time_since_epoch().count());
+    const auto revision = formatRevision(currentRevision());
     Json::Value body;
     body["scope"] = "index-writer";
     body["holder"] = "reconciler";
@@ -405,20 +387,25 @@ HttpResponsePtr decoyResponse(const HttpRequestPtr& request)
         return statusResponse(today);
 
     if(reading && (path == "/api/v1/index/jobs" || path == "/api/v1/index/jobs/"))
-        return jobsResponse(today, 1);
+        return jobsResponse(today, 0);
 
-    if(reading && path == "/api/v1/index/jobs/page/2")
-        return jobsResponse(today, 2);
+    constexpr std::string_view cursorPrefix = "/api/v1/index/jobs/cursor/";
+    if(reading && path.starts_with(cursorPrefix))
+    {
+        const auto page = decodeCursor(std::string_view(path).substr(cursorPrefix.size()), today);
+        if(!page)
+            return jsonReply(400, errorBody("invalid_cursor"));
+        return jobsResponse(today, *page);
+    }
 
     if(auto response = jobRoute(path, method, today))
         return response;
 
     if(reading && path == "/api/v1/index/leases/current")
-        return leaseResponse(today, currentJob);
+        return leaseResponse(currentJob);
 
     if(method == Delete && path == "/api/v1/index/leases/current")
-        return jsonReply(403, errorBody("maintenance_principal_required",
-                                        "Only a maintenance principal may release the writer lease."));
+        return leaseConflictResponse();
 
     if(reading && path.starts_with("/internal/export/index-manifest-"))
     {

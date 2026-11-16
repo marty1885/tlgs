@@ -4,6 +4,7 @@ add_executable(tlgs_server
   controllers/search.cpp
   controllers/tools.cpp
   controllers/api.cpp
+  decoy_world.cpp
   controllers/decoy.cpp
   controllers/tarpit.cpp)
   target_compile_features(tlgs_server PRIVATE cxx_std_20)
