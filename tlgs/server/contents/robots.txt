@@ -1,6 +1,8 @@
 User-agent: *
 Disallow: /search
 Disallow: /v/search
+Disallow: /search/no_ml
+Disallow: /v/search/no_ml
 Disallow: /search_jump
 Disallow: /v/search_jump
 Disallow: /add_seed
