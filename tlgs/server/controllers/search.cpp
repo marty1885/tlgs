@@ -2125,10 +2125,11 @@ Task<HttpResponsePtr> SearchController::tlgs_search(HttpRequestPtr req)
     double processing_time = duration_cast<duration<double>>(t2 - t1).count();
     const auto& peer_ip = req->getAttributes()->get<std::string>("peer_ip");
     const auto& protocol = req->getAttributes()->get<std::string>("protocol");
-    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds. source: {}, proto: {}."
+    LOG_DEBUG << fmt::format("Searching for '{}' took {} {} seconds. source: {}, proto: {}. {}"
         , tlgs::logText(input), cache_status, processing_time
         , tlgs::logText(peer_ip.empty() ? req->getHeader("X-Real-IP") : peer_ip)
-        , tlgs::logText(protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol));
+        , tlgs::logText(protocol.empty() ? (req->isOnSecureConnection() ? "https" : "http") : protocol)
+        , tlgs::logText(protocol.empty() ? ("UA: " + req->getHeader("user-agent")): ""));
     co_return resp;
 }
 
