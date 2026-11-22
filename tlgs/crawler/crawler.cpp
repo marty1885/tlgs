@@ -107,6 +107,15 @@ std::string mimeFromMeta(const std::string_view meta)
 GeminiCrawler::GeminiCrawler(EventLoop* loop) : loop_(loop) {}
 GeminiCrawler::~GeminiCrawler() = default;
 
+void GeminiCrawler::recordTardisImportFailure(std::string_view url, std::string_view error)
+{
+    std::lock_guard lock(tardis_failures_mutex_);
+    if(url.empty())
+        tardis_import_failures_.emplace_back(error);
+    else
+        tardis_import_failures_.push_back(fmt::format("{}: {}", url, error));
+}
+
 Task<void> GeminiCrawler::configureTardisSiteIdentity()
 {
     const auto active = co_await app().getDbClient()->execSqlCoro(R"sql(
@@ -184,7 +193,6 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
     size_t pages = 0;
     while(true) {
         auto page = co_await client.updates(since, till, token);
-        tardis_import_failures_ = 0;
         tardis_active_ = true;
         ended_ = false;
         std::vector<std::string> captured_urls;
@@ -259,10 +267,15 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
         // crawlPage() immediately after their links are parsed.
         co_await syncTardisSiteIdentity(captured_urls);
         co_await crawlAll();
-        const auto failures = tardis_import_failures_.load();
-        if(failures != 0)
-            throw std::runtime_error("TARDIS page import failed for " + std::to_string(failures)
-                + " capture(s); cursor was not advanced");
+        {
+            std::lock_guard lock(tardis_failures_mutex_);
+            if(!tardis_import_failures_.empty()) {
+                for(const auto& failure : tardis_import_failures_)
+                    LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(failure);
+                throw std::runtime_error("TARDIS page import failed for "
+                    + std::to_string(tardis_import_failures_.size()) + " capture(s); cursor was not advanced");
+            }
+        }
         if(page.hasMore) {
             token = page.resumeToken;
             co_await db->execSqlCoro("UPDATE crawler_sync_state SET window_since = $1, window_till = $2, resume_token = $3 WHERE source = 'tardis';", since, till, token);
@@ -569,9 +582,8 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
         auto can_crawl = it == url_str.end() && co_await shouldCrawl(url_str);
         if(can_crawl == false) {
             if(tardis_active_) {
-                LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str)
-                          << (it == url_str.end() ? ": invalid Gemini URL" : ": control character in URL");
-                ++tardis_import_failures_;
+                recordTardisImportFailure(url_str,
+                    it == url_str.end() ? "invalid Gemini URL" : "control character in URL");
                 continue;
             }
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
@@ -634,10 +646,8 @@ void GeminiCrawler::dispatchCrawl()
                 bool success = co_await self->crawlPage(url_str.value(), retry_count != 0);
                 if(success)
                     LOG_INFO << "Processed " << url_str.value();
-                else if(self->tardis_active_) {
-                    LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str.value());
-                    ++self->tardis_import_failures_;
-                }
+                else if(self->tardis_active_)
+                    self->recordTardisImportFailure(*url_str, "capture rejected");
                 if(self->tardis_active_) {
                     std::lock_guard lock(self->tardis_captures_mutex_);
                     self->tardis_captures_.erase(url_str.value());
@@ -654,9 +664,7 @@ void GeminiCrawler::dispatchCrawl()
                 }
                 else {
                     if(self->tardis_active_) {
-                        LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str.value())
-                                  << ": " << tlgs::logText(e.what());
-                        ++self->tardis_import_failures_;
+                        self->recordTardisImportFailure(*url_str, e.what());
                         std::lock_guard lock(self->tardis_captures_mutex_);
                         self->tardis_captures_.erase(url_str.value());
                         break;
@@ -672,9 +680,10 @@ void GeminiCrawler::dispatchCrawl()
         self->loop_->queueInLoop(queue_dispatch);
     }
     catch(std::exception& e) {
-        LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
         if(self->tardis_active_)
-            ++self->tardis_import_failures_;
+            self->recordTardisImportFailure({}, fmt::format("while dispatching: {}", e.what()));
+        else
+            LOG_ERROR << "Exception escaped in dispatchCrawl(): " << e.what();
         counter->release();
         const auto weak = std::weak_ptr<GeminiCrawler>(self);
         self->loop_->queueInLoop([weak] {

@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <optional>
 #include <tbb/concurrent_unordered_map.h>
@@ -131,6 +132,7 @@ protected:
     Task<bool> crawlPage(const std::string& url_str, bool retry_after_timeout = false);
     Task<void> configureTardisSiteIdentity();
     Task<void> syncTardisSiteIdentity(const std::vector<std::string>& urls);
+    void recordTardisImportFailure(std::string_view url, std::string_view error);
 
     EventLoop* loop_;
     tbb::concurrent_unordered_map<std::string, size_t> host_timeout_count_;
@@ -145,8 +147,9 @@ protected:
     std::mutex tardis_captures_mutex_;
     std::unordered_map<std::string, TardisCapture> tardis_captures_;
     std::atomic<bool> tardis_active_ = false;
-    // A feed page may be checkpointed only after all of its captures were imported.
-    std::atomic<size_t> tardis_import_failures_ = 0;
+    // Collect worker errors so they can be printed together before exiting.
+    std::mutex tardis_failures_mutex_;
+    std::vector<std::string> tardis_import_failures_;
     // A TARDIS window uses one immutable ruleset, even if an administrator
     // activates a replacement while the window is being processed.
     std::optional<int64_t> tardis_ruleset_id_;
