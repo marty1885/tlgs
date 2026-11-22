@@ -132,6 +132,7 @@ protected:
     Task<bool> crawlPage(const std::string& url_str, bool retry_after_timeout = false);
     Task<void> configureTardisSiteIdentity();
     Task<void> syncTardisSiteIdentity(const std::vector<std::string>& urls);
+    Task<void> importTardisCaptures(const std::vector<std::string>& urls);
     void recordTardisImportFailure(std::string_view url, std::string_view error);
 
     EventLoop* loop_;

@@ -1,5 +1,6 @@
 #include "tardis_client.hpp"
 
+#include <deque>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -56,9 +57,9 @@ std::string decompressZstd(std::string_view compressed)
     return output;
 }
 
-std::unordered_map<std::string, std::string> parseWarcResources(std::string_view warc)
+std::unordered_map<std::string, std::deque<std::string>> parseWarcResources(std::string_view warc)
 {
-    std::unordered_map<std::string, std::string> bodies;
+    std::unordered_map<std::string, std::deque<std::string>> bodies;
     size_t position = 0;
     while(position < warc.size()) {
         const auto record = warc.find("WARC/1.0\r\n", position);
@@ -82,7 +83,7 @@ std::unordered_map<std::string, std::string> parseWarcResources(std::string_view
         if(contentLength > warc.size() - body)
             throw std::runtime_error("truncated WARC payload from TARDIS");
         if(!target.empty())
-            bodies.emplace(std::move(target), std::string(warc.substr(body, contentLength)));
+            bodies[std::move(target)].emplace_back(warc.substr(body, contentLength));
         position = body + contentLength;
         if(warc.substr(position, 4) == "\r\n\r\n")
             position += 4;
@@ -114,7 +115,7 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
     TardisPage page{.hasMore = update.at("has_more").get<bool>(), .resumeToken = update.value("resume_token", ""), .till = update.at("till_unix_millis").get<int64_t>()};
     if(update.at("results").empty()) co_return page;
     std::string batch = update.at("batch_token").get<std::string>();
-    std::unordered_map<std::string, std::string> bodies;
+    std::unordered_map<int64_t, std::string> bodies;
     while(!batch.empty()) {
         auto batchPolicy = dremini::withClientCert(certificate_, privateKey_);
         auto archive = co_await dremini::sendRequestCoro(endpoint_ + "/api/v1/batch/" + encodePathSegment(batch), 30, loop_, 80 * 1024 * 1024, {}, 120, std::move(batchPolicy));
@@ -124,7 +125,7 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
         if(manifestIt == resources.end())
             manifestIt = resources.find("urn:tardis:batch:manifest");
         if(manifestIt == resources.end()) throw std::runtime_error("TARDIS batch has no manifest");
-        const auto manifest = nlohmann::json::parse(manifestIt->second);
+        const auto manifest = nlohmann::json::parse(manifestIt->second.front());
         for(const auto &entry : manifest.at("results")) {
             // The manifest covers every change, while WARC records are only
             // present for bodies selected by body-mime.  Do not mistake an
@@ -133,8 +134,12 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
             if(!entry.contains("warc_target_uri"))
                 throw std::runtime_error("TARDIS included batch body has no WARC target URI");
             const auto body = resources.find(entry.at("warc_target_uri").get<std::string>());
-            if(body == resources.end()) throw std::runtime_error("TARDIS batch body is missing");
-            bodies[entry.at("url").get<std::string>()] = body->second;
+            if(body == resources.end() || body->second.empty())
+                throw std::runtime_error("TARDIS batch body is missing");
+            // WARC records for the same target follow the manifest's order.
+            // The result ID identifies a particular capture across batches.
+            bodies.emplace(entry.at("crawl_result_id").get<int64_t>(), std::move(body->second.front()));
+            body->second.pop_front();
         }
         const auto nextBatch = manifest.find("next_batch_token");
         batch = nextBatch == manifest.end() || nextBatch->is_null() ? "" : nextBatch->get<std::string>();
@@ -151,8 +156,8 @@ Task<TardisPage> TardisClient::updates(int64_t since, int64_t till, const std::s
         // that as status 0 so the crawler records the failure instead of
         // aborting the whole incremental-sync window.
         TardisCapture capture{.url = entry.at("url").get<std::string>(), .status = entry.value("status_code", 0), .meta = entry.value("meta", "")};
-        if(const auto body = bodies.find(capture.url); body != bodies.end()) {
-            capture.body = body->second;
+        if(const auto body = bodies.find(entry.at("crawl_result_id").get<int64_t>()); body != bodies.end()) {
+            capture.body = std::move(body->second);
             capture.hasBody = true;
         }
         page.captures.push_back(std::move(capture));

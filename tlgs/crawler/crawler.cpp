@@ -161,6 +161,20 @@ Task<void> GeminiCrawler::syncTardisSiteIdentity(const std::vector<std::string>&
     )sql", *tardis_ruleset_id_, rows.dump());
 }
 
+Task<void> GeminiCrawler::importTardisCaptures(const std::vector<std::string>& urls)
+{
+    co_await syncTardisSiteIdentity(urls);
+    co_await crawlAll();
+
+    std::lock_guard lock(tardis_failures_mutex_);
+    if(!tardis_import_failures_.empty()) {
+        for(const auto& failure : tardis_import_failures_)
+            LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(failure);
+        throw std::runtime_error("TARDIS page import failed for "
+            + std::to_string(tardis_import_failures_.size()) + " capture(s); cursor was not advanced");
+    }
+}
+
 Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPages)
 {
     const auto endpoint = config.get("endpoint", "gemini://tardis.northwire.xyz").asString();
@@ -203,6 +217,20 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
             if(!parsed_url.good() || parsed_url.str() != url) {
                 throw std::runtime_error("invalid TARDIS URL: " + tlgs::logText(url));
             }
+
+            // Drain earlier queued bodies before applying a later change to
+            // the same URL. The feed is ordered oldest first.
+            bool pending;
+            {
+                std::lock_guard lock(tardis_captures_mutex_);
+                pending = tardis_captures_.contains(url);
+            }
+            if(pending) {
+                co_await importTardisCaptures(captured_urls);
+                captured_urls.clear();
+                ended_ = false;
+            }
+
             captured_urls.push_back(parsed_url.str());
             if(capture.hasBody) {
                 {
@@ -263,19 +291,7 @@ Task<void> GeminiCrawler::syncTardis(const Json::Value& config, size_t maximumPa
                 "content_type = COALESCE(EXCLUDED.content_type, pages.content_type);",
                 parsed_url.str(), parsed_url.host(), parsed_url.port(), mime, capture.status, capture.meta);
         }
-        // Sources are batched per feed page. Outgoing targets are mapped by
-        // crawlPage() immediately after their links are parsed.
-        co_await syncTardisSiteIdentity(captured_urls);
-        co_await crawlAll();
-        {
-            std::lock_guard lock(tardis_failures_mutex_);
-            if(!tardis_import_failures_.empty()) {
-                for(const auto& failure : tardis_import_failures_)
-                    LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(failure);
-                throw std::runtime_error("TARDIS page import failed for "
-                    + std::to_string(tardis_import_failures_.size()) + " capture(s); cursor was not advanced");
-            }
-        }
+        co_await importTardisCaptures(captured_urls);
         if(page.hasMore) {
             token = page.resumeToken;
             co_await db->execSqlCoro("UPDATE crawler_sync_state SET window_since = $1, window_till = $2, resume_token = $3 WHERE source = 'tardis';", since, till, token);
