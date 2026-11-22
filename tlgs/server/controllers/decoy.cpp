@@ -359,6 +359,11 @@ HttpResponsePtr decoyResponse(const HttpRequestPtr& request)
     const auto method = request->method();
     const bool reading = method == Get || method == Head;
 
+    if(path == "/mcp" || path == "/mcp/" || path == "/api/mcp" ||
+       path == "/api/mcp/" || path == "/sse" || path == "/sse/")
+        return jsonReply(403, errorBody("maintenance_principal_required",
+                                        "The automation endpoint is restricted to maintenance clients."));
+
     if(reading && (path == "/tarpt" || path == "/tarpt/"))
         return tlgs::httpTarpitWarning();
     constexpr std::string_view tarpitPrefix = "/tarpt/";
