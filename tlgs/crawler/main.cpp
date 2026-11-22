@@ -1,11 +1,14 @@
 #include <trantor/utils/Logger.h>
 #include <drogon/HttpAppFramework.h>
+#include <tlgsutils/utils.hpp>
 #include "crawler.hpp"
 
 #include "CLI/App.hpp"
 #include "CLI/Formatter.hpp"
 #include "CLI/Config.hpp"
 
+#include <atomic>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <unistd.h>
@@ -38,6 +41,7 @@ Json::Value loadCrawlerConfig(const std::string& configFile)
 }
 
 int main(int argc, char** argv)
+try
 {
     trantor::Logger::setLogLevel(trantor::Logger::LogLevel::kInfo);
     CLI::App cli{"TLGS crawler"};
@@ -55,43 +59,54 @@ int main(int argc, char** argv)
     const auto config = loadCrawlerConfig(config_file);
     app().loadConfigJson(config);
 
+    std::atomic<int> exit_status{EXIT_SUCCESS};
     app().getLoop()->queueInLoop(async_func([&]() -> Task<void> {
+        try {
 #ifdef __OpenBSD__
-        // Drogon has started; install the sandbox before the first crawl.
-        const auto uploadPath = app().getUploadPath();
-        if(unveil(uploadPath.c_str(), "rwc") == -1)
-            throw std::runtime_error("unable to unveil Drogon upload spool: " + uploadPath);
-        // Trantor may use c-ares, which reads these files itself rather than
-        // using libc's resolver access granted by the dns pledge.
-        for(const auto* path : {"/etc/resolv.conf", "/etc/hosts"}) {
-            if(unveil(path, "r") == -1)
-                throw std::runtime_error("unable to unveil DNS configuration: " + std::string(path));
-        }
-        const auto& custom = app().getCustomConfig()["tardis"];
-        for(const auto* field : {"certificate", "private_key"}) {
-            const auto path = custom.get(field, "").asString();
-            if(!path.empty() && unveil(path.c_str(), "r") == -1)
-                throw std::runtime_error("unable to unveil crawler " + std::string(field) + ": " + path);
-        }
-        // Drogon does not expose database hosts through getCustomConfig().
-        for(const auto& db : config["db_clients"]) {
-            const auto host = db.get("host", "").asString();
-            if(!host.empty() && host.front() == '/' && unveil(host.c_str(), "w") == -1)
-                throw std::runtime_error("unable to unveil PostgreSQL socket directory: " + host);
-        }
-        if(unveil(nullptr, nullptr) == -1)
-            throw std::runtime_error("unable to lock TLGS crawler unveil rules");
-        if(pledge("stdio rpath wpath cpath inet unix dns", nullptr) == -1)
-            throw std::runtime_error("unable to pledge TLGS crawler");
+            // Drogon has started; install the sandbox before the first crawl.
+            const auto uploadPath = app().getUploadPath();
+            if(unveil(uploadPath.c_str(), "rwc") == -1)
+                throw std::runtime_error("unable to unveil Drogon upload spool: " + uploadPath);
+            // Trantor may use c-ares, which reads these files itself rather than
+            // using libc's resolver access granted by the dns pledge.
+            for(const auto* path : {"/etc/resolv.conf", "/etc/hosts"}) {
+                if(unveil(path, "r") == -1)
+                    throw std::runtime_error("unable to unveil DNS configuration: " + std::string(path));
+            }
+            const auto& custom = app().getCustomConfig()["tardis"];
+            for(const auto* field : {"certificate", "private_key"}) {
+                const auto path = custom.get(field, "").asString();
+                if(!path.empty() && unveil(path.c_str(), "r") == -1)
+                    throw std::runtime_error("unable to unveil crawler " + std::string(field) + ": " + path);
+            }
+            // Drogon does not expose database hosts through getCustomConfig().
+            for(const auto& db : config["db_clients"]) {
+                const auto host = db.get("host", "").asString();
+                if(!host.empty() && host.front() == '/' && unveil(host.c_str(), "w") == -1)
+                    throw std::runtime_error("unable to unveil PostgreSQL socket directory: " + host);
+            }
+            if(unveil(nullptr, nullptr) == -1)
+                throw std::runtime_error("unable to lock TLGS crawler unveil rules");
+            if(pledge("stdio rpath wpath cpath inet unix dns", nullptr) == -1)
+                throw std::runtime_error("unable to pledge TLGS crawler");
 #endif
-        auto crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
-        const auto tardis = app().getCustomConfig()["tardis"];
-        if(tardis.isNull())
-            throw std::runtime_error("missing tardis configuration");
-        co_await crawler->syncTardis(tardis, maximum_pages);
+            auto crawler = std::make_shared<GeminiCrawler>(app().getIOLoop(0));
+            const auto tardis = app().getCustomConfig()["tardis"];
+            if(tardis.isNull())
+                throw std::runtime_error("missing tardis configuration");
+            co_await crawler->syncTardis(tardis, maximum_pages);
+        }
+        catch(const std::exception& e) {
+            LOG_ERROR << "Crawler failed: " << tlgs::logText(e.what());
+            exit_status = EXIT_FAILURE;
+        }
         app().quit();
     }));
 
-
     app().run();
+    return exit_status.load();
+}
+catch(const std::exception& e) {
+    LOG_ERROR << "Crawler failed: " << tlgs::logText(e.what());
+    return EXIT_FAILURE;
 }

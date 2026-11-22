@@ -565,11 +565,15 @@ Task<std::optional<std::string>> GeminiCrawler::getNextCrawlPage()
         auto url_str = next_url.value();
 
         // URL should not contain any ASCII control characters
-        auto it = std::find_if(url_str.begin(), url_str.end(), [](char c) { return c < 0x20; });
+        auto it = std::find_if(url_str.begin(), url_str.end(), [](unsigned char c) { return c < 0x20; });
         auto can_crawl = it == url_str.end() && co_await shouldCrawl(url_str);
         if(can_crawl == false) {
-            if(tardis_active_)
+            if(tardis_active_) {
+                LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str)
+                          << (it == url_str.end() ? ": invalid Gemini URL" : ": control character in URL");
                 ++tardis_import_failures_;
+                continue;
+            }
             co_await db->execSqlCoro("UPDATE pages SET last_crawled_at = CURRENT_TIMESTAMP, last_status = $2, last_meta = $3 WHERE url = $1;"
                 , url_str, 0, std::string("blocked"));
             co_await db->execSqlCoro("DELETE FROM pages WHERE url = $1 AND last_crawl_success_at < CURRENT_TIMESTAMP - INTERVAL '30' DAY;"
@@ -649,13 +653,15 @@ void GeminiCrawler::dispatchCrawl()
                              << "; retry " << retry_count << " in " << retry_delay << " seconds";
                 }
                 else {
-                    LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
                     if(self->tardis_active_) {
+                        LOG_ERROR << "Failed to import TARDIS capture " << tlgs::logText(url_str.value())
+                                  << ": " << tlgs::logText(e.what());
                         ++self->tardis_import_failures_;
                         std::lock_guard lock(self->tardis_captures_mutex_);
                         self->tardis_captures_.erase(url_str.value());
                         break;
                     }
+                    LOG_ERROR << "Exception escaped crawling " << url_str.value() << ": " << e.what();
                     abort();
                 }
             }
@@ -1041,14 +1047,12 @@ Task<bool> GeminiCrawler::crawlPage(const std::string& url_str, bool retry_after
         }
     }
     catch(std::exception& e) {
+        // Keep the original error so the TARDIS dispatcher can report it or
+        // retry the same capture after a SQL execution timeout.
+        if(tardis_active_)
+            throw;
         error = e.what();
     }
-
-    // Snapshot responses stay resident until the page is committed. Let the dispatcher
-    // retry the same response after database pressure subsides instead of running more SQL
-    // in this already-timed-out attempt.
-    if(tardis_active_ && isSqlExecutionTimeout(error))
-        throw std::runtime_error(error);
 
     if(error == "Timeout" || error == "NetworkFailure")
         host_timeout_count_[url.hostWithPort(1965)]++;
